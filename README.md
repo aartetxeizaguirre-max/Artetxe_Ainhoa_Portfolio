@@ -5,7 +5,7 @@
 
 ## Proyecto Transversal: Enfoque Multidisciplinar
 
-El núcleo de este repositorio es un proyecto transversal diseñado para dar solución a un problema biológico/sanitario central mediante diferentes vías de análisis. Este enfoque permite abordar la complejidad de los datos ómicos desde cuatro perspectivas complementarias:
+El núcleo de este repositorio es un proyecto transversal diseñado por los profesores del master para dar solución a un problema biológico/sanitario central mediante diferentes vías de análisis. El plroyecto transvesal se ha realizado grupalmente para trabajar cooperativamente en busca de las soluciones del problema de la obesidad en un conjunto de datos ficticio. Este enfoque permite abordar la complejidad de los datos ómicos desde cuatro perspectivas complementarias:
 
 ### 1. Algoritmos e Inteligencia Artificial
 

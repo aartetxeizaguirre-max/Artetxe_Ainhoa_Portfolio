@@ -1,0 +1,357 @@
+---
+title: "Resolución Actividad 2 máster Bioinformática UNIR (2025)"
+author: "Ainhoa Artetxe Izaguirre"
+date: "2025-12-09"
+output: html_document
+---
+
+# Estádistica y R para ciencias de la salud
+
+## Actividad 2: Análisis descriptivos en R
+
+## Indíce de la actividad
+
+1.  Preparación de la actividad
+2.  Comprobación de la normalidad
+    1.  Prueba de Shapiro-Wilk
+        1.  Interpretación de los resultados del test de normalidad de Shapiro-Wilk
+    2.  Prueba complementaria de Anderson-Darling
+        1.  Interpretación de los resultados del test de normalidad de Anderson-Darling
+3.  Análisis Descriptivo Bivariante por Tratamiento y Extensión Tumoral
+    1.  Analisis estádistico de los genes en función del tratamiento (1er nivel) y de la extensión tumoral (2º nivel)
+        1.  Comparación estadística de la expresión génica entre los grupos de tratamiento
+    2.  Analisis estádistico de los genes en función de la edad en 2 categorías según la mediana (categoría 1: edad \<percentil 50 de edad; categoría 2: edad \>=percentil 50 de edad)
+        1.  Comparación estadística de la expresión génica estratificada por edad
+4.  Bibliografía
+
+### 1. Preparación de la actividad
+
+Primero de todo hay que praparar la actividad, y para ello se instalan y se cargan los pincipales paquetes o librerias que se van a usar. Asimismo se cargael dataset que se va a utilizar, para usarlo posteriormente.
+
+```{r Preparación, message=FALSE, warning=FALSE}
+
+# Primero cargamos las librerías necesarias para llevar a cabo la actividad
+# Instalar en caso de no tener instaladas dichas librerias
+# install.packages("ggplot2")
+# install.packages("stats")
+# install.packages("car")
+# install.packages("nortest")
+# install.packages("gtsummary")
+# install.packages("rstatix")
+# install.packages("dplyr")
+# install.packages("readr")
+# install.packages("tidyverse")
+# install.packages("purrr")
+# install.packages("writexl")
+library("ggplot2")
+library("stats")
+library("car")
+library("nortest")
+library("gtsummary")
+library("rstatix")
+library("dplyr")
+library("readr")
+library("tidyverse")
+library("purrr")
+library("writexl")
+
+# Seleccionar el directorio en el que se va a trabajar
+setwd("C:/Users/lenovo/Desktop/BIOINFORMATICA/Estadística y R para Ciencias de la Salud/Actividad2")
+
+# Cargar el dataset que se va a utilizarse
+data <- read.csv("MUBioinfo_dataset_genes_oct2025.csv")
+
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### 2. Comprobación de la Normalidad
+
+#### **2.1. Prueba de Shapiro-Wilk**
+
+El primer objetivo es comprobar si la expresión de los genes sigue una distribución normal. Se aplican pruebas estadísticas de normalidad a las variables de expresión génica, en este caso, la prueba de *Shapriro-Wilk* $^1$.
+
+**1. Contraste de Hipótesis**
+
+-   **Hipótesis Nula (**$\text{H}_0$): La expresión del gen sigue una distribución normal.
+
+-   **Hipótesis Alternativa (**$\text{H}_1$): La expresión del gen no sigue una distribución normal.
+
+-   **Nivel de significación (**$\alpha$): Se establece en $0.05$.
+
+La decisión se toma al comparar el **valor** $p$ con $\alpha$:
+
+-   Si $p \le 0.05$, se rechaza $\text{H}_0$ (No es normal).
+
+-   Si $p > 0.05$, no se rechaza $\text{H}_0$ (Se asume normalidad).
+
+```{r Shapiro-Wilk, message=FALSE, warning=FALSE}
+
+# Seleccionar solo las columnas de genes (que comienzan por 'AQ_')
+data_genes <- data %>%
+  select(starts_with("AQ_"))
+
+# Realizar el test de Shapiro-Wilk para todas las columnas de genes
+# La función shapiro_test del paquete rstatix permite aplicarlo fácilmente a múltiples columnas
+resultados_normalidad <- data_genes %>%
+  gather(key = "Gen", value = "Expresion", everything()) %>%
+  group_by(Gen) %>%
+  shapiro_test(Expresion)
+
+# Mostrar y guardar la tabla de resultados
+print(resultados_normalidad)
+write.csv(
+    resultados_normalidad, 
+    "resultados_normalidad_genes.csv", 
+    row.names = FALSE  # Argumento clave para mantener limpio el archivo
+)
+
+```
+
+#### Interpretación de los resultados del test de normalidad de Shapiro–Wilk
+
+La tabla 1 presenta los resultados de la prueba de normalidad de Shapiro-Wilk aplicada a los valores de expresión relativa (AQ) de los distintos genes analizados en el estudio. Esta prueba estadística es fundamental, ya que evalúa si los datos siguen una distribución normal, un requisito previo necesario para la aplicación válida de pruebas estadísticas paramétricas comunes, como la prueba t de Student o el análisis de varianza (ANOVA) $^1$..
+
+La hipótesis nula ($H_0$) de la prueba de Shapiro-Wilk postula que los datos se han obtenido a partir de una distribución normal, mientras que la hipótesis alternativa ($H_a$) sugiere que no es así. La decisión estadística se rige por el valor p, utilizando un nivel de significación estándar ($\alpha$) de 0,05. Los valores p por debajo de este umbral conducen al rechazo de la hipótesis nula, concluyendo que los datos no siguen una distribución normal $^1$..
+
+De acuerdo con los resultados obtenidos, todas las variables analizadas, desde $AQ\_actb$ hasta $AQ\_vegfa$, muestran valores $p$ extremadamente bajos, que se sitúan sistemáticamente entre $10^{-8}$ y $10^{-9}$. Estos valores son sustancialmente inferiores al nivel de significación establecido de $0,05$, lo que lleva al rechazo sistemático y contundente de la hipótesis nula en todos y cada uno de los casos. En consecuencia, se concluye que ninguna de las variables de expresión génica evaluadas sigue una distribución normal, como se indica explícitamente en la columna de interpretación (**«No sigue la normalidad»**).
+
+Este patrón ubicuo de no normalidad se observa a menudo en los estudios de expresión biológica, en particular en los datos derivados de técnicas como la PCR cuantitativa (qPCR), que con frecuencia producen distribuciones asimétricas o sesgadas debido a la variabilidad biológica o a factores técnicos. Basándose en estos resultados definitivos, el uso de pruebas estadísticas paramétricas es inadecuado para comparar estos niveles de expresión entre grupos experimentales. Por lo tanto, se recomienda encarecidamente la aplicación de métodos no paramétricos para mantener la validez estadística y la solidez de las conclusiones del estudio. Entre las alternativas adecuadas se encuentran la prueba U de Mann-Whitney para comparaciones entre dos grupos o la prueba de Kruskal-Wallis para comparaciones entre múltiples grupos.
+
+#### **Prueba complementaria de Anderson-Darling**
+
+Asimismo como el test de Shapiro-Wilk suele usarse en pruebas con muestras de datos pequeñas (\<50) y en este estudio hay un número inferior se va a realizar la prueba complementaria de Anderson-Darling que es para muestras mas grandes $^2$.
+
+```{r Andersin-Darling, message=FALSE, warning=FALSE}
+
+# Realizar el test de Anderson-Darling para todas las columnas de genes
+resultados_anderson <- data_genes %>%
+  gather(key = "Gen", value = "Expresion", everything()) %>%
+  group_by(Gen) %>%
+  summarise(
+    Prueba_AD = list(ad.test(Expresion)),
+    Estadistico_A2 = Prueba_AD[[1]]$statistic,
+    Valor_p = Prueba_AD[[1]]$p.value,
+    .groups = "drop" # Desagrupar al final
+  ) %>%
+  select(Gen, Estadistico_A2, Valor_p)
+
+# Mostrar y guardar la tabla de resultados
+print(resultados_anderson)
+write.csv(
+    resultados_anderson, 
+    "resultados_anderson_genes.csv", 
+    row.names = FALSE  # Argumento clave para mantener limpio el archivo
+)
+
+```
+
+#### Interpretación de los resultados del test de normalidad de Anderson-Darling
+
+Al igual que con la prueba de Shapiro-Wilk podemos ver como con la prueba de Anderson-Darling, que es más adecuada para muestras más grandes los resultados obtenidos nos muestran lo mismo. Es decir, que ninguno de los genes sigue la normalidad, para ninguna de las dos pruebas estadísticas. Esto refuerza los resultados obtenidos con la prueba de Shapiro y podemos de esta manera confirmar que no siguen la normalidad.
+
+### 3. Análisis Descriptivo Bivariante por Tratamiento y Extensión Tumoral
+
+El objetivo es calcular descriptivos para las variables de los genes en función de dos variables categóricas: tratamiento y extensión tumoral.
+
+**Comprobación de la normalidad del resto de parametros cuantitativos:** En este caso se ha usado únicamente el test de Shapiro-Wilk para comprobar la normalidad, ya que en el paso anterior se ha visto que tanto con esta prueba como con Anderson-Darling se obtiene la misma conclusión.
+
+```{r Normalidad_resto, message=FALSE, warning=FALSE}
+
+# Sabemos que ninguno de los genes sigue una distribución normal
+# Comprobar que el resto de las variables que van a utilizarse siguen o no una distribución normal
+columnas_a_quitar <- c(
+    "id", "tratamiento", "extension", "sexo", "exfumador", "hta", "dm", 
+    "alergia", "cardiopatia", "ete", "neumopatia", "hepatopatia", "colelitiasis", 
+    "utolitiasis", "itu", "renal", "neuropatia", "corticoides", "tos", "disnea", 
+    "expect", "secrecion", "dolor_garg", "escalofrios", "fiebre", "diarrea", 
+    "nauseas", "vomitos", "cefalea", "mareo", "cansancio", "anosmia", 
+    "disgueusia", "dolor_hueso", "dolor_abdo", "perd_ape"
+)
+data_resto <- data %>%
+  select(
+    !starts_with("AQ_"),
+    -one_of(columnas_a_quitar)
+  )
+
+resultados_normalidad_resto <- data_resto %>%
+  gather(key = "Gen", value = "Expresion", everything()) %>%
+  group_by(Gen) %>%
+  shapiro_test(Expresion)
+print(resultados_normalidad_resto)
+
+write.csv(
+    resultados_normalidad_resto, 
+    "resultados_normalidad_resto.csv", 
+    row.names = FALSE  # Argumento clave para mantener limpio el archivo
+)
+
+```
+
+#### Interpretación de los resultados de la prueba de normalidad estadística para el resto de variables
+
+Esta tabla muestra los resultados de una prueba de normalidad, probablemente la prueba de Shapiro-Wilk o un método similar, aplicada a 20 variables biológicas y de salud (etiquetadas en español, por ejemplo, $calidad\_fisica$, $glucosa$, $col$, $transferrina$, $pcr$). La tabla muestra el nombre de la variable, la estadística de la prueba y el valor $p$ para cada prueba. Utilizando un nivel de significación de $\alpha = 0,05$, evaluamos la normalidad.
+
+Solo tres variables ($calidad\_fisica$ (calidad física), $col$ (colesterol) y $transferrina$ (transferrina)) muestran valores $p$ superiores a $0,05$ (por ejemplo, $0,06821$, $0,68155$, $0,66375$), lo que sugiere que sus distribuciones son probablemente normales.
+
+Las otras 17 variables, incluidas $glucosa$ (glucosa), $pcr$ y $trigliceridos$ (triglicéridos), tienen valores $p$ muy por debajo de $0,05$ (algunos tan bajos como $10^{-14}$), lo que indica que sus datos tienen una distribución significativamente no normal. Este hallazgo dicta el uso de pruebas no paramétricas para los análisis comparativos posteriores de la mayoría de las variables.
+
+#### **3.1. Analisis estádistico de los genes en función del tratamiento (1er nivel) y de la extensión tumoral (2º nivel)**
+
+```{r Analisis Descriptivo, message=FALSE, warning=FALSE}
+
+
+# Creamos una variable con el nombre de los genes
+genes <- c("AQ_actb", "AQ_gapdh", "AQ_b2m", "AQ_rpl13a", "AQ_hprt1", "AQ_vegfa", 
+           "AQ_il6", "AQ_tnf", "AQ_egfr", "AQ_cxcl8", "AQ_esr1", "AQ_her2", 
+           "AQ_brca1", "AQ_brca2", "AQ_mki67", "AQ_gata3", "AQ_foxa1", "AQ_ccnd1", 
+           "AQ_cdh1", "AQ_tp53", "AQ_mmp9", "AQ_pten", "AQ_myc", "AQ_kras", 
+           "AQ_akt1", "AQ_cdkn2a", "AQ_pdcd1", "AQ_ctla4", "AQ_hlaa", "AQ_casp3")
+
+# Ejecutar Shapiro-Wilk para la muestra completa
+normality_results <- data %>% 
+  select(all_of(genes)) %>%
+  map_df(~ shapiro.test(.x)$p.value) %>% 
+  pivot_longer(everything(), names_to = "variable", values_to = "p_value")
+
+# Crear la lista de fórmulas para stat_list
+stat_list <- normality_results %>%
+  mutate(
+    formula_stat = ifelse(
+      p_value >= 0.05, 
+      "{mean} \u00B1 {sd}",                    # Normal: Media (SD)
+      "{median} ({p25} - {p75})"               # No Normal: Mediana (P25 - P75)
+    )
+  ) %>%
+  # Convertir a lista de fórmulas (esto es clave)
+  {setNames(
+    lapply(.$formula_stat, function(x) as.formula(paste("~", shQuote(x)))),
+    .$variable
+  )}
+
+# Generación de la Tabla
+# Usar una fórmula única para todos (más simple)
+tabla_genes <- data %>%
+  select(tratamiento, extension, all_of(genes)) %>%
+  
+  tbl_strata(
+    strata = tratamiento,
+    .tbl_fun = ~ .x %>%
+      
+      tbl_summary(
+        by = extension,
+        statistic = all_continuous() ~ "{median} ({p25} - {p75})",
+        digits = all_continuous() ~ 2,
+        include = all_of(genes) 
+      ) %>%
+      
+      add_p(
+        test = all_continuous() ~ "kruskal.test",
+        pvalue_fun = ~ style_pvalue(.x, digits = 3)
+      )
+  )
+
+tabla_genes
+
+# Convertir a tibble y guardar
+tabla_genes %>%
+  as_tibble() %>%
+  write_xlsx("tabla_genes.xlsx")
+
+
+```
+
+#### Comparación estadística de la expresión génica entre los grupos de tratamiento
+
+Esta tabla, «Tabla modelo 2», presenta una comparación estadística de la expresión relativa (AQ) de 25 genes, clasificados tanto por tratamiento (placebo frente a fármaco/medicamento) como por extensión del tumor (metastásico frente a localizado). Los datos de cada subgrupo se resumen utilizando la mediana (P50) y el rango intercuartílico (IQR), lo que confirma que se utilizaron estadísticas no paramétricas, en consonancia con los datos no normales identificados en pruebas anteriores.
+
+El análisis utiliza valores p para evaluar la diferencia estadística en la expresión génica entre los grupos. Un valor p inferior a 0,05 indica una diferencia significativa.
+
+**Análisis del grupo placebo (metastásico frente a localizado)**
+
+En el grupo placebo, la expresión de la mayoría de los genes, en particular los 11 primeros (desde AQ_actb hasta AQ_egfr), muestra una diferencia muy significativa (p \< 0,001) entre los tumores metastásicos y los localizados. Los tumores metastásicos muestran sistemáticamente una expresión muy baja (mediana 0,05) en comparación con los tumores localizados (mediana 0,48-0,53). Sin embargo, varios oncogenes y supresores tumorales clave, como AQ_her2 (p = 0,498), AQ_brca1 (p = 0,880), AQ_tp53 (p = 0,522) y AQ_pten (p = 0,970), no muestran diferencias significativas entre las dos categorías de extensión tumoral bajo tratamiento con placebo.
+
+**Análisis del grupo de fármacos (metastásico frente a localizado)**
+
+En el grupo de fármacos, la mayoría de los genes (18 de 25) muestran ahora una diferencia muy significativa (p \< 0,001 o p \< 0,001) entre las extensiones tumorales. Es importante destacar que algunos genes que anteriormente no mostraban diferencias con el placebo, como AQ_her2, AQ_brca1, AQ_brca2 y AQ_tp53, ahora presentan diferencias significativas, con una mayor expresión en los tumores localizados. Esto sugiere que el mecanismo del fármaco o su eficacia podrían variar sustancialmente en función del estado metastásico del tumor. Solo cinco genes, entre ellos AQ_mmp9, AQ_pten y AQ_akt1, no muestran diferencias significativas en la expresión entre los tumores metastásicos y los localizados bajo el tratamiento farmacológico.
+
+Esta tabla comparativa es esencial para identificar los biomarcadores cuya expresión está modulada por el fármaco y cuyo nivel de expresión es indicativo del potencial metastásico del tumor primario.
+
+#### **3.2. Analisis estádistico de los genes en función de la edad en 2 categorías según la mediana (categoría 1: edad \<percentil 50 de edad; categoría 2: edad \>=percentil 50 de edad)**
+
+```{r Analisis Descriptivo 2, message=FALSE, warning=FALSE}
+
+# 1. Calcular el Percentil 50 de la edad (la mediana)
+percentil_50 <- quantile(data$edad, 0.50, na.rm = TRUE)
+
+# 2. Crear la nueva variable de agrupación
+data <- data %>%
+  mutate(
+    edad_percentil = factor(
+      ifelse(data$edad < percentil_50, "< P50", "> P50"),
+      levels = c("< P50", "> P50") # Aseguramos el orden
+    )
+  )
+
+# Crear la lista de estadísticas como LISTA NOMBRADA
+stat_list_formulas <- normality_results %>%
+  mutate(
+    formula_stat_string = ifelse(
+      p_value >= 0.05, 
+      "{mean} ({sd})",
+      "{median} ({p25} - {p75})"
+    )
+  ) %>%
+  # Convertir a LISTA nombrada (no vector)
+  {setNames(as.list(.$formula_stat_string), .$variable)}
+
+# Verificar que es una lista
+str(stat_list_formulas)  # Debe mostrar "List of n"
+
+# Tabla
+tabla_edad <- data %>%
+  tbl_summary(
+    by = edad_percentil,
+    statistic = stat_list_formulas,  # Ahora es una lista nombrada
+    digits = all_continuous() ~ 2,
+    include = all_of(genes) 
+  ) %>%
+  add_p(
+    test = all_continuous() ~ "kruskal.test",
+    pvalue_fun = ~ style_pvalue(.x, digits = 3)
+  )
+
+tabla_edad
+
+# Convertir a tibble y guardar
+tabla_edad %>%
+  as_tibble() %>%
+  write_xlsx("tabla_genes_edad.xlsx")
+
+```
+
+#### Comparación estadística de la expresión génica estratificada por edad
+
+La tabla 3, denominada «Tabla modelo 3», presenta una comparación estadística de la expresión relativa (AQ) de los mismos 25 genes, pero esta vez estratificados por edad: «Edad_cat \< percentil 50» (categoría de edad \< percentil 50) y «Edad_cat $\ge$ percentil 50» (categoría de edad $\ge$ percentil 50). La expresión génica se resume utilizando la mediana (P50) y el rango intercuartílico (IQR), lo que indica el uso adecuado de pruebas no paramétricas, como la prueba U de Mann-Whitney, para generar los valores p.
+
+El objetivo principal de este análisis es determinar si la edad, categorizada en el percentil 50, influye significativamente en los niveles de expresión basales de estos genes. Un valor $p$ inferior a $0,05$ significa una diferencia estadísticamente significativa en la expresión entre los grupos de pacientes más jóvenes y más mayores.
+
+Principales conclusiones por estratificación por edad
+
+La mayoría de los genes (24 de 25) no muestran diferencias estadísticamente significativas en la expresión relativa entre los grupos de pacientes más jóvenes y mayores, como lo indican los valores p que están en gran medida muy por encima de 0,05 (por ejemplo, AQ_gapdh con p = 0,675, AQ_tnf con p = 0,086, AQ_her2 con p = 0,408). Esto sugiere que, para la mayoría de los genes analizados, la expresión basal es estable en todas las categorías de edad.
+
+Sin embargo, solo un gen, $AQ\_pten$, muestra una diferencia estadísticamente significativa en la expresión entre las dos categorías de edad ($p = 0,020$).
+
+-   $AQ\_pten$ (homólogo de la fosfatasa y la tensina): este gen, un supresor tumoral crítico, muestra una expresión media más alta en el grupo más joven (mediana: $0,07$; IQR: $0,05 - 0,24$) en comparación con el grupo de mayor edad (mediana: $0,05$; IQR: $0,03 - 0,08$). Aunque las medianas son similares, el valor $p$ confirma que la distribución de los niveles de expresión es significativamente diferente entre los grupos de edad. Este hallazgo justifica una investigación biológica más profunda, ya que la reducción de la expresión de un supresor tumoral como el PTEN en pacientes de más edad podría estar relacionada con factores de riesgo relacionados con la edad para el cáncer o la progresión de la enfermedad $^3$ $^4$.
+
+En resumen, la estratificación por edades en el percentil 50 parece tener un impacto mínimo en la expresión de la mayoría de los genes, siendo $AQ\_pten$ la única excepción estadísticamente significativa.
+
+### Bibliografía
+
+1.  Habibzadeh F. Data distribution: Normal or abnormal? J Korean Med Sci [Internet]. 2024;39(3):e35. Disponible en: <http://dx.doi.org/10.3346/jkms.2024.39.e35>
+
+2.  Theodorsson E. BASIC computer program to summarize data using nonparametric and parametric statistics including Anderson-Darling test for normality. Comput Methods Programs Biomed [Internet]. 1988;26(2):207–13. Disponible en: [http://dx.doi.org/10.1016/0169-2607(88)90046-6](http://dx.doi.org/10.1016/0169-2607(88)90046-6){.uri}
+
+3.  Xu W-T, Yang Z, Lu N-H. Roles of PTEN (Phosphatase and Tensin Homolog) in gastric cancer development and progression. Asian Pac J Cancer Prev [Internet]. 2014;15(1):17–24. Disponible en: <http://dx.doi.org/10.7314/apjcp.2014.15.1.17>
+
+4.  Xu W, Yang Z, Zhou S-F, Lu N. Posttranslational regulation of phosphatase and tensin homolog (PTEN) and its functional impact on cancer behaviors. Drug Des Devel Ther [Internet]. 2014;8:1745–51. Disponible en: <http://dx.doi.org/10.2147/DDDT.S71061>

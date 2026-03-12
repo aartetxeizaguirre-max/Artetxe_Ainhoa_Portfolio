@@ -1,0 +1,274 @@
+---
+title: "Actividad1"
+output:
+  html_document: default
+  pdf_document: default
+date: "2025-11-13"
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+# Actividad 1: Representación gráfica de datos e interpretación de resultados
+
+Autora: Ainhoa Artetxe Izaguirre
+
+Fecha: 18/11/2025
+
+## 1. Creación del gráfico de cajas conjunto de todos los 10 genes
+
+**Lista de genes:** "AQ_ESR1", "AQ_HER2", "AQ_BRCA1", "AQ_BRCA2",
+"AQ_MKI67", "AQ_GATA3", "AQ_FOXA1", "AQ_CCND1", "AQ_CDH1", "AQ_TP53"
+
+```{r boxplot, message=FALSE, warning=FALSE}
+
+setwd("C:/Users/lenovo/Desktop/BIOINFORMATICA/Estadística y R para Ciencias de la Salud/Actividad1")
+
+# install.packages("ggplot2") 
+# install.packages("patchwork")
+# install.packages("dplyr")
+# install.packages("tidyverse")
+
+library(ggplot2) 
+library(patchwork) 
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+
+datos <- read.csv("C:/Users/lenovo/Desktop/BIOINFORMATICA/Estadística y R para Ciencias de la Salud/Actividad1/MUBioinfo_dataset_genes_oct2025.csv")
+
+genes_a_graficar <- c("AQ_ESR1", "AQ_HER2", "AQ_BRCA1", "AQ_BRCA2", "AQ_MKI67", 
+                      "AQ_GATA3", "AQ_FOXA1", "AQ_CCND1", "AQ_CDH1", "AQ_TP53")
+
+datos_long <- datos %>%
+  pivot_longer(
+    cols = all_of(genes_a_graficar),
+    names_to = "Gen_Nombre",
+    values_to = "Expresion_AQ"
+  )
+
+combined_plot_facet <- ggplot(datos_long, aes(x = tratamiento, y = Expresion_AQ, fill = tratamiento)) +
+  geom_boxplot() +
+  
+  facet_wrap(~ Gen_Nombre, ncol = 5) + 
+  
+  labs(title = "Expresión de Genes por Tipo de Tratamiento", x = "Tratamiento", y = "Expresión (AQ)") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+    strip.placement = "outside",
+    strip.text = element_text(face = "bold", hjust = 0.5, size = 8),
+    axis.title.x = element_text(face = "bold", size = 8),
+    axis.text.x = element_text(size = 6, margin = margin(t = 0.5)),
+    panel.spacing = unit(0.5, "lines"),
+    axis.title.y = element_text(face = "bold", size = 8)
+  )
+
+combined_plot_facet
+```
+
+### Interpretación del gráfico
+
+La observación más llamativa es la distribución bimodal de la expresión
+génica determinada por el tipo de tratamiento. Para los diez genes
+analizados (incluidos receptores hormonales como ESR1 y HER2, marcadores
+de proliferación como MKI67 y supresores tumorales como TP53), los
+niveles de expresión son drásticamente diferentes entre los dos grupos.
+El grupo placebo muestra niveles de expresión universalmente altos, con
+medianas consistentemente cercanas al valor AQ máximo (alrededor de 0,9
+a 1,0). Las distribuciones en este grupo son estrechas, lo que indica
+una baja variabilidad entre los sujetos que reciben el placebo. Por el
+contrario, el grupo «fármaco» (fármaco) muestra niveles de expresión
+universalmente bajos. Para cada gen, el valor mediano de AQ es cercano a
+0,0, lo que indica que el fármaco silenció eficazmente o reguló
+significativamente a la baja la expresión de todo este panel de genes.
+El tratamiento farmacológico parece ser muy eficaz para reducir la
+actividad de los principales impulsores de la proliferación celular
+(MKI67, CCND1) y la señalización (ESR1, HER2) en comparación con el
+valor de referencia (placebo). Esta fuerte y constante regulación a la
+baja sugiere un mecanismo de acción potente y amplia por parte del
+fármaco. Cabe recalcar que en casos como el del gen TP53 si es funcional
+el hecho de usar el fármaco podría ser negativo ya que es un gen muy
+importante para la labor del organismo frente a tumores, y el fármaco
+podría dejar al paciente sin defensas. Por el contrario, si ese gen
+estuviese dañado si que podría ser beneficioso suprimir su acción. No
+obstante, en otros de los genes analizados la función del fármaco sería
+del todo beneficiosa por silenciar genes que favorecen a los tumores y
+su creación.
+
+## 2. Creación del histograma para parámetros bioquímicos en toda la población
+
+**Lista de parametros:** "glucosa", "leucocitos", "linfocitos",
+"neutrofilos", "chol", "hdl", "hierro", "igA", "igE", "igG", "igN",
+"ldl", "pcr", "transferrina", "trigliceridos", "cpk"
+
+```{r histogram, message=FALSE, warning=FALSE}
+
+# install.packages("tidyr")
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+parametros_bioquimicos <- c(
+  "glucosa", "leucocitos", "linfocitos", "neutrofilos", 
+  "chol", "hdl", "hierro", "igA", "igE", "igG", "igN", 
+  "ldl", "pcr", "transferrina", "trigliceridos", "cpk"
+)
+
+datos_long_bio <- datos %>%
+  select(all_of(parametros_bioquimicos)) %>%
+  pivot_longer(
+    cols = everything(),             
+    names_to = "Parametro",         
+    values_to = "Valor"             
+  )
+
+combined_histogram <- ggplot(datos_long_bio, aes(x = Valor)) +
+  geom_histogram(
+    aes(y = after_stat(density)), 
+    bins = 30, 
+    fill = "#7AC5CD", 
+    color = "#53868B", 
+    alpha = 0.6
+  ) +
+  geom_density(color = "#27408B", linewidth = 1) +
+  facet_wrap(~ Parametro, scales = "free", ncol = 4) + 
+  labs(
+    title = "Distribución de Parámetros Bioquímicos (Histograma y Densidad)",
+    x = "Valor Bioquímico",
+    y = "Frecuencia / Densidad"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
+    strip.text = element_text(face = "bold")
+  )
+
+combined_histogram
+
+```
+
+## Interpretación del gráfico
+
+La imagen proporcionada muestra la distribución de dieciséis parámetros
+bioquímicos diferentes (por ejemplo, colesterol, hierro, glucosa, IgA,
+linfocitos, etc.) en toda la población estudiada, utilizando una
+combinación de histogramas (barras) y curvas de densidad de probabilidad
+estimadas (líneas azules continuas).
+
+**Interpretación de las distribuciones de las variables bioquímicas**
+
+Al observar la población general, se aprecia que las distribuciones de
+las variables bioquímicas son bastante variadas. Muchos parámetros, como
+el colesterol (chol), el hierro (hierro), la glucosa (glucosa), el HDL,
+la IgG y la transferrina (transferrina), muestran una tendencia hacia
+una distribución unimodal con un pico central. Estas distribuciones
+sugieren, en general, que la mayoría de la población se encuentra dentro
+de un rango específico y típico para estos marcadores, lo cual es común
+en las mediciones fisiológicas clínicamente relevantes. Por el
+contrario, variables como la creatina fosfoquinasa (CPK), IgA, IgE, IgN,
+LDL, leucocitos, neutrófilos, proteína C reactiva (PCR) y triglicéridos
+muestran una notable asimetría positiva (desplazada a la izquierda).
+Esto significa que sus curvas de densidad se desvían hacia la izquierda,
+con una larga cola de menos individuos que muestran valores muy altos.
+Este patrón se observa a menudo en parámetros que son cercanos a cero en
+una población sana, pero que pueden aumentar significativamente debido a
+condiciones subyacentes (por ejemplo, inflamación para la pcr, o
+infección para algunas inmunoglobulinas y leucocitos). Los datos
+confirman visualmente que la población no es homogénea en sus perfiles
+de parámetros, lo que requiere diversos enfoques estadísticos para su
+análisis.
+
+**Evaluación de la distribución normal o simétrica**
+
+A partir de los gráficos de densidad, es evidente que la mayoría de las
+variables bioquímicas no siguen estrictamente una distribución normal o
+simétrica, que visualmente se asemejaría a una curva de campana
+gaussiana. Solo unos pocos parámetros, en particular el colesterol
+(chol), la glucosa (glucosa) y la transferrina (transferrina), muestran
+una distribución aproximadamente simétrica o lo suficientemente cercana
+a la normalidad como para superar potencialmente las pruebas básicas de
+normalidad, aunque siguen presentando cierto grado de asimetría menor o
+un comportamiento no ideal en los extremos. Sin embargo, la mayoría de
+las variables, incluidas la CPK, la IgA, la IgE, la IgN, el LDL, los
+leucocitos, los neutrófilos, la PCR y los triglicéridos, muestran
+claramente una pronunciada asimetría positiva (hacia la derecha). En
+estas distribuciones asimétricas, el valor medio se desplazaría hacia la
+cola derecha, lo que significa que el valor típico (moda/mediana) es
+inferior a la media, y la gran mayoría de las observaciones se agrupan
+hacia el extremo inferior del rango de medición. Las distribuciones de
+pcr y neutrófilos son ejemplos particularmente extremos de esta
+asimetría positiva, con grandes picos cerca de cero. Por lo tanto, las
+pruebas paramétricas estándar que asumen la normalidad probablemente
+serían inadecuadas para la mayoría de estas variables sin una
+transformación previa de los datos (por ejemplo, una transformación
+logarítmica) o el uso de métodos no paramétricos.
+
+## 3. Creación del heatmap para para la correlación entre genes y pacientes
+
+```{r heatmap, message=FALSE, warning=FALSE}
+
+# install.packages("pheatmap") 
+library(pheatmap) 
+library(tidyverse)
+
+datos_genes <- datos[, grep("^AQ", colnames(datos), value = TRUE)]
+rownames(datos_genes) <- datos$id
+
+print(colnames(datos_genes))
+print(rownames(datos_genes))
+
+datos_expresion <- t(datos_genes)
+datos_escalados <- t(scale(t(datos_expresion)))
+
+set.seed(1995)
+
+heatmap_particiones <- pheatmap(
+  datos_escalados,
+  main = "Heatmap con Agrupamiento Jerárquico\n(Clusters de genes y pacientes)",
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "complete",
+  cutree_rows = 3,           # Dividir genes en 3 grupos (ajusta según observes)
+  cutree_cols = 8,           # Dividir pacientes en 8 grupos (similar a tu imagen)
+  show_rownames = TRUE,
+  show_colnames = TRUE,      # MOSTRAR nombres de pacientes
+  fontsize_row = 6,
+  fontsize_col = 6,          # Tamaño pequeño para nombres de pacientes
+  fontsize = 10,
+  angle_col = 90,            # Rotar nombres de pacientes 90 grados
+  color = colorRampPalette(c("darkblue", "blue", "white", "red", "darkred"))(100),
+  border_color = "gray80",
+  cellwidth = 5,
+  cellheight = 5,
+  legend = TRUE,
+  legend_breaks = c(-2, -1, 0, 1, 2),
+  legend_labels = c("-2", "-1", "0", "1", "2")
+)
+
+```
+
+### Interpretación del gráfico
+
+El análisis de agrupamiento jerárquico revela claramente que los 65
+pacientes no forman un grupo homogéneo. En cambio, se segregan en grupos
+distintos basados en firmas de expresión génica compartidas, lo que
+sugiere claramente la existencia de diferentes subtipos moleculares. Un
+patrón dominante divide la cohorte de pacientes en dos supergrupos
+principales. El primero, que se observa en la parte izquierda del mapa
+de calor (aproximadamente del paciente_1 al paciente_34), se caracteriza
+por una expresión baja generalizada (azul intenso) en los grupos de
+genes superiores e inferiores. Por el contrario, el segundo supergrupo
+de la parte derecha (a partir del paciente_35) es mucho más dinámico y
+«activo». Por ejemplo, un subgrupo muestra aquí una alta expresión
+(rojo) en el grupo de genes del medio, mientras que el grupo de la
+extrema derecha muestra una alta expresión en los grupos de genes
+superior e inferior.Del mismo modo, los 30 genes forman tres grupos de
+coexpresión distintos. Los grupos 1 (superior) y 3 (inferior) se
+comportan de manera similar, lo que sugiere un mecanismo regulador
+común. El grupo 2 (central), que incluye genes biológicamente críticos
+como HER2, ESR1y BRCA1, se comporta de forma independiente y no está
+correlacionado con los demás, lo que define sus propios subgrupos de
+pacientes únicos.

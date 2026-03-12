@@ -1,0 +1,354 @@
+---
+title: "Actividad1"
+output: html_document
+date: "2025-11-18"
+---
+
+# Actividad 1. Aplicación de técnicas de aprendizaje no supervisado sobre datos biológicos
+
+-   **Autora:** Ainhoa Artetxe Izaguirre
+-   **Fecha:** 18/11/2025
+
+## **Librerias utilizadas**
+
+En la tabla de abajo se explican las pricipales librerias utilizadas en cada uno de los gráficos realizados, y también cuales son sus principales funciones y argumentos clave.
+
++---------------------------------+----------------+----------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Método                          | Librería       | Función principal                                  | Argumentos clave                                                                                                                                                                         |
++=================================+================+====================================================+==========================================================================================================================================================================================+
+| Visualización (común)           | ggplot2        | `ggplot()geom_point()`                             | `aes(color=labels.raw$Class)`: Asigna un color distinto a cada punto según el tipo de cáncer (variable categórica).                                                                      |
+|                                 |                |                                                    |                                                                                                                                                                                          |
+|                                 |                |                                                    | `x, y`: Mapean las nuevas dimensiones calculadas (ej. PC1, PC2) a los ejes del gráfico.                                                                                                  |
++---------------------------------+----------------+----------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| PCA (Componentes Principales)   | stats (Base R) | `prcomp()`                                         | `center=TRUE`: Resta la media a cada gen. Crucial para que el PCA analice la varianza y no la media de los datos.                                                                        |
+|                                 |                |                                                    |                                                                                                                                                                                          |
+|                                 |                |                                                    | `scale.=FALSE`: Mantiene la escala original de los datos (no divide por la desviación estándar), asumiendo que la magnitud de la expresión génica es relevante.                          |
++---------------------------------+----------------+----------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| MDS (Escalado Multidimensional) | stats (Base R) | `dist()cmdscale()`                                 | `method="euclidean"`(en `dist`): Define que la similitud se mide por distancia en línea recta entre perfiles genéticos.                                                                  |
+|                                 |                |                                                    |                                                                                                                                                                                          |
+|                                 |                |                                                    | `k=2` (en `cmdscale`): Fuerza al algoritmo a comprimir la información en solo 2 dimensiones para poder graficarla (X e Y).                                                               |
++---------------------------------+----------------+----------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| t-SNE                           | Rtsne          | `Rtsne()`                                          | `dims=2`: Dimensiones de salida.                                                                                                                                                         |
+|                                 |                |                                                    |                                                                                                                                                                                          |
+|                                 |                |                                                    | `perplexity`: Controla el equilibrio entre la estructura local y global. Define cuántos "vecinos" considera cada punto como relevantes.                                                  |
+|                                 |                |                                                    |                                                                                                                                                                                          |
+|                                 |                |                                                    | `check_duplicates=FALSE`: Evita que el algoritmo falle si encuentra dos muestras de pacientes idénticas.                                                                                 |
++---------------------------------+----------------+----------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Isomap                          | vegan          | `isomap()`                                         | `k` (número de vecinos): Define la conectividad del grafo. Determina cuántos puntos cercanos se usan para estimar la distancia geodésica (distancia sobre la "superficie" de los datos). |
++---------------------------------+----------------+----------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Clustering                      | pam()          | **x** (`data_clean`): Los datos limpios.           | Calcula el agrupamiento usando el algoritmo *Partitioning Around Medoids* (más robusto que K-means).                                                                                     |
+|                                 |                |                                                    |                                                                                                                                                                                          |
+|                                 |                | **k** (`2`): El número de clústers deseados.       |                                                                                                                                                                                          |
++---------------------------------+----------------+----------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Clustering                      | clusplot()     | **x** (`pam_result`): El resultado del clustering. | Visualiza los clústers en un plano 2D reduciendo dimensiones (automáticamente hace PCA).                                                                                                 |
++---------------------------------+----------------+----------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+## **Principales problemas con los datos**
+
+1.  **El Problema: Variables Constantes (Varianza 0)**
+
+    El archivo tanto de `datos.csv` `datos_500.csv` contiene una o varias columnas donde todos los valores son idénticos para las 500 observaciones. Motivos de porque eso es un problema:
+
+    1.  **Error matemático en Visualización:** Al intentar generar el gráfico con `clusplot`, la función intenta estandarizar los datos (calcular la correlación). Esto implica dividir por la desviación estándar. Si una variable es constante, su desviación es 0. **Dividir por cero causa el error** que viste anteriormente (`cannot use 'cor = TRUE' with a constant variable`).
+
+    -   **Inutilidad en Clustering:** Para agrupar datos, buscamos *diferencias*. Una columna que es igual para todos no aporta ninguna información para separar grupos (la distancia es siempre 0), solo añade "ruido" computacional.
+
+2.  **La solución: usar el código**
+
+    Durante la `Actividad1.Rmd` se soluciona esto de forma explícita en el bloque de limpieza de datos mediante tres pasos clave:
+
+    1.  **Eliminar el Índice (Problema secundario)** El CSV trae una columna de numeración de filas (probablemente llamada "X" o primera columna) que no es una variable real.
+    2.  **Detectar columnas constantes** El código revisa columna por columna si su varianza es 0.
+    3.  **Filtrar el dataset** Crea un nuevo objeto (`data_clean`) conservando solo las columnas que **NO** (`!`) son constantes.
+
+------------------------------------------------------------------------
+
+## **GRÁFICO 1: Isomap**
+
+**Descripción de este tipo de gráfico**: Reducción de dimensionalidad no lineal que preserva la estructura global y las distancias geodésicas mediante grafos de vecindad.
+
+**Motivo de elección:** El principal motivo de elección es que en este caso se usan las distancias geodesicas, lo cual no ocurre en muchos otros métodos y esto puede dar un nuevo punto de vista. Asimismo otro motivo muy importante para usar Isomap en el análisis de datos de RNA-seq de diferentes tipos de cáncer es su capacidad para capturar estructuras no lineales en datos de alta dimensionalidad (miles de genes).
+
+**Aspectos positivos y negativos:**
+
+-   **Ventaja:** Es altamente eficaz para la reducción de dimensionalidad en conjuntos de datos que presentan relaciones intrínsecamente no lineales, logrando preservar la geometría curva del manifold subyacente
+
+-   **Limitaciones:**
+
+    -   Sensibilidad a la Densidad: Es muy sensible a la baja densidad de datos, ya que la falta de puntos intermedios puede llevar a "atajos" incorrectos en el grafo de vecindad, distorsionando la estimación de la distancia geodésica.
+
+    -   Selección de $k$: La determinación del parámetro knúmero de vecinos) es un paso crítico y difícil de optimizar sin un conocimiento previo profundo del conjunto de datos.
+
+    -   Rendimiento Computacional: Puede ser computacionalmente costoso y lento en comparación con métodos lineales como PCA, especialmente con conjuntos de datos muy grandes.
+
+```{r isomap, message=FALSE, warning=FALSE}
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("RDRToolbox")
+
+library(RDRToolbox)
+library(ggplot2)
+
+setwd("C:/Users/lenovo/Desktop/BIOINFORMATICA/Algoritmos e Inteligencia Artificial/Actividad1")
+data <- read.csv("data.csv")
+datos_500 <- read.csv("datos_500.csv")
+labels <- read.csv("labels.csv")
+
+data <- sapply(data[2:501], as.numeric)
+data_matrix <- as.matrix(data)
+isomap.results = Isomap(data=data_matrix, dims=1:10, k=15, plotResiduals=TRUE)
+isomap.df <- data.frame(isomap.results$dim2)
+
+ggplot(isomap.df, aes(x = X1, y = X2, color = labels$Class)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("#e04a4aff", "#6fa8dcff", "#6aa84fff", "#f6b26bff", "#8e7cc3ff")) +
+  labs(title = "Isomap - Types of Cancer", x = 'Dim 1', y = 'Dim 2', color = "Grupo") +
+  theme_classic() +
+  theme(panel.grid.major = element_line(color = "gray90"), panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "gray95"), plot.title=element_text(hjust=0.5))
+
+```
+
+### Explicación del gráfico 1 (Isomap)
+
+En el primero de los dos gráficos se puede ver como al llegar a las 2 dimensiones la varianza residual disminuye significativamente y por lo tanto dos dimensiones son suficientes para ver las agrupaciones de los datos.
+
+Este segundo gráfico Isomap muestra los cinco tipos de cáncer separados en grupos distintos y bien definidos utilizando las dos primeras dimensiones. Se ha decidido usar el k valor 15, es decir 15 vecinos cercanos para cada punto, ya que se han realizados diferentes pruebas con otros valores tanto más bajos como más altos y ha sido el que más ha conseguido separar los puntos por colores. Al realizar esto se observa un fuerte aislamiento para PRAD y KIRC. Asimismo también se consigue separar los genes BRCA, LUAD y COAD pero no de una forma tan eficaz como los otros dos mencionados anteriormente. Eso podría deberse a que tienen más en común y por lo tanto es más complicado que se separen tanto. Esta visualización confirma que las firmas de expresión génica subyacentes y los mecanismos biológicos de estos tipos de tumores son únicos, lo que hace que el resultado sea muy sensato desde el punto de vista biológico.
+
+#### Otros ejemplos usando otros valores de k
+
+Se ha realizado el mismo estudio o algortimo pero usando otros valores de *k* y se ha visto que la forma óptima para la separación por grupos es usando *k*=15, ya que consigue que se vean mejor las agrupoaciones por colores. En la tabla de abajo pueden verse los resultados obtenidos al usar *k*=10 y *k*=20, que se consiguen cambiando `isomap.results = Isomap(data=data_matrix, dims=1:10, k=15, plotResiduals=TRUE)` ese valor 15 por los que se quieran. Se han puesto las imagenes en lugar del código completo de nuevo para evitar que se alargue el trabajo, y la obtención de las imagenes se hizo al hacer las pruebas.
+
+| k=10 | k=20 |
+|----|----|
+| ![](k10){width="500"} | ![](images/clipboard-2679465572.png){width="500"} |
+| Se puede observar como usando k=10 los resultados que se obtienen solo aislan al grupo de cancer KIRC (verde), pero sigue sin hacer una distinción adecuada entre los demás grupos. | En el caso de k=20 tanto el tipo de cancer PRAD como el KIRC se aislan bastante pero esto hace que el resto de grupos se junten más, por lo que no es tampoco la opción óptima. |
+
+## **GRÁFICO 2: t-sne (t-distributed Stochastic Neighbor Embedding)**
+
+**Descripción de este tipo de gráfico**: t-SNE es un algoritmo no lineal que se usa para visualizar datos de alta dimensión, preservando las relaciones de vecindad local para formar clusters claros en un espacio bidimensional.
+
+**Motivo de elección:** t-SNE es ideal para visualizar la compleja naturaleza no lineal de los datos de RNA-seq de cáncer. Se enfoca en preservar las relaciones de vecindad local, asegurando que muestras con perfiles genéticos sutiles se agrupen fuertemente. Esto permite resolver los subtipos de tumores en clusters visuales compactos y bien separados, lo cual es crucial para su descubrimiento y validación biológica.
+
+**Aspectos positivos y negativos:**
+
+-   **Ventajas:**
+
+    -   Modelado No Lineal Superior: Supera a métodos lineales (como PCA) al modelar eficazmente las relaciones complejas y no lineales inherentes a los datos de alta dimensión.
+
+    -   Preservación de la Estructura Local: Se enfoca en preservar la proximidad de los vecinos (estructura local), lo que resulta en clusters visuales altamente compactos y distinguibles.
+
+    -   Revelación de Estructura Global: Aunque su enfoque es local, a menudo consigue revelar parte de la estructura global de los datos en el mapeo a baja dimensionalidad.
+
+    -   Eficiencia Visual: Es una herramienta altamente eficiente para la identificación y estructuración visual de patrones, facilitando la interpretación humana de conjuntos de datos complejos.
+
+-   **Limitaciones:**
+
+    -   Comportamiento Estocástico (No Determinista): Debido a su naturaleza probabilística, el t-SNE no es determinista. Esto significa que ejecuciones repetidas del algoritmo en el mismo conjunto de datos pueden producir resultados visuales ligeramente diferentes, lo que requiere establecer una semilla (`set.seed()`) para la reproducibilidad.
+
+    -   Escalabilidad Computacional: Presenta una complejidad cuadrática en tiempo y espacio, donde $N$ es el número de muestras. Esto lo hace muy lento e intensivo en memoria con conjuntos de datos que superan decenas de miles de muestras, limitando su uso a gran escala (aunque existen optimizaciones como Barnes-Hut t-SNE).
+
+    -   Restricción Dimensional: Generalmente, se utiliza para mapear datos a una segunda o tercera dimensión (2D o 3D) con fines de visualización. El algoritmo no está diseñado para reducir la dimensión a un número mayor (p. ej., 10D), ya que su efectividad y la claridad de la estructura se degradan rápidamente a partir de la tercera dimensión.
+
+```{r t-sna, message=FALSE, warning=FALSE}
+
+# install.packages("Rtsne")
+# install.packages("Rtools")
+library(ggplot2)
+library(Rtsne)
+
+set.seed(1234)
+data.raw <- read.csv('data.csv')
+labels.raw <- read.csv('labels.csv')
+
+data <- sapply(data.raw[2:501], as.numeric)
+tsne <- Rtsne(X=data)
+tsne_result <- data.frame(tsne$Y)
+
+ggplot(tsne_result, aes(x = X1, y = X2, color = labels.raw$Class)) +
+geom_point(size = 3) +
+scale_color_manual(values = c("#e04a4aff", "#6fa8dcff", "#6aa84fff", "#f6b26bff", "#8e7cc3ff")) +
+labs(title = "t-SNE - Types of cancer", x = "Dim 1", y = "Dim 2", color = "Grupo") +
+theme_classic() +
+theme(panel.grid.major = element_line(color = "gray90"), panel.grid.minor = element_blank(),
+panel.background = element_rect(fill = "gray95"), plot.title=element_text(hjust=0.5))
+
+
+```
+
+### Explicación del gráfico 2 (t-sne)
+
+El gráfico t-SNE, basado en las dos primeras dimensiones, visualiza eficazmente los datos de secuenciación de ARN de alta dimensión. Se observan cinco grupos muy diferenciados y compactos, sin solapamiento entre los tipos de cáncer (BRCA, COAD, KIRC, LUAD, PRAD). El método destaca con éxito la estructura local de los datos, lo que confirma que las muestras dentro de un tipo de cáncer comparten una gran similitud, mientras que las muestras entre tipos son molecularmente distantes. Este resultado es muy sensato desde el punto de vista biológico, ya que valida visualmente que los cinco tipos de tumores poseen firmas de expresión génica subyacentes únicas, lo que refleja sus distintos orígenes y mecanismos moleculares. La agrupación superior confirma la idoneidad del método para datos no lineales.
+
+## **GRÁFICO 3: PCA (t-distributed Stochastic Neighbor Embedding)**
+
+**Descripción de este tipo de gráfico**: El PCA es un procedimiento lineal que reduce la dimensionalidad al convertir los datos en un nuevo sistema de coordenadas (componentes principales), con el objetivo de encontrar los ejes ortogonales que optimizan la varianza.
+
+**Motivo de elección:** Para el primer análisis de datos de RNA-seq, se escoge PCA debido a su eficacia para eliminar la correlación entre genes y para disminuir la redundancia lineal. Es útil para la visualización temprana de la variabilidad y dispersión más importante de las muestras o para el preprocesamiento rápido de modelos predictivos.
+
+**Aspectos positivos y negativos:**
+
+-   **Ventajas:**
+
+    -   Estabilidad y decorrelación: Convierte las variables originales en componentes completamente autónomos, suprimendo la redundancia y aumentando la estabilidad de los modelos predictivos (disminuyendo el overfitting).
+
+    -   Eficiencia mediante correlaciones: Cuando el conjunto de datos de expresión génica muestra correlaciones lineales elevadas entre genes, este método es más eficaz.
+
+    -   Sencillez y rapidez: Es un algoritmo que es sencillo de implementar y ejecutar, y rápido en términos computacionales; es perfecto para conjuntos de datos amplios.
+
+-   **Limitaciones:**
+
+    -   Suposición de linealidad (Error con curvas): Su eficacia está relacionada con la linealidad mayoritaria de las relaciones entre las variables. No logra reconocer estructuras o curvas complejas (como las variedades no lineales que pueden ser captadas por t-SNE o Isomap).
+
+    -   Sensibilidad al escalar: Es muy susceptible a las discrepancias en la escala y las unidades de las variables que se han considerado como originales. Por eso, necesita un proceso riguroso de estandarización previa para que los componentes principales tengan relevancia.
+
+    -   Dificultad para la interpretación: Las variables originales se combinan de manera lineal y abstracta para configurar los componentes principales, lo que complica su interpretación directa y la asignación a cada uno de ellos de un significado biológico concreto.
+
+```{r PCA, message=FALSE, warning=FALSE}
+
+# install.packages("stats")
+library(stats)
+library(ggplot2)
+
+data.raw <- read.csv('data.csv')
+labels.raw <- read.csv('labels.csv')
+
+data <- data.frame(sapply(data.raw[2:501], as.numeric))
+
+pca.results <- prcomp(data, center=TRUE, scale.=FALSE)
+pca.df <- data.frame(pca.results$x)
+
+varianzas <- pca.results$sdev^2
+total.varianza <- sum(varianzas)
+varianza.explicada <- varianzas/total.varianza
+varianza.acumulada <- cumsum(varianza.explicada)
+
+n.pc <- min(which(varianza.acumulada > 0.95))
+x_label <- paste0(paste('PC1', round(varianza.explicada[1] * 100, 2)), '%')
+y_label <- paste0(paste('PC2', round(varianza.explicada[2] * 100, 2)), '%')
+
+ggplot(pca.df, aes(x=PC1, y=PC2, color=labels.raw$Class)) +
+  geom_point(size=3) +
+  scale_color_manual(values=c("#e04a4aff", "#6fa8dcff", "#6aa84fff", "#f6b26bff", "#8e7cc3ff")) +
+  labs(title='PCA - Types of Cancer', x=x_label, y=y_label, color='Grupo') +
+  theme_classic() +
+  theme(panel.grid.major = element_line(color="gray90"), panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "gray95"), plot.title = element_text(hjust = 0.5))
+```
+
+### Explicación del gráfico 3 (PCA)
+
+Este gráfico PCA, que utiliza PC1 (21,66 %) y PC2 (11,47 %) de la varianza, muestra una separación parcial de los cinco tipos de cáncer. KIRC (verde) y PRAD (morado) se resuelven con éxito en grupos distintos y aislados. Sin embargo, BRCA (rojo), COAD (azul) y LUAD (naranja) muestran un solapamiento significativo en el cuadrante superior izquierdo. Esto sugiere que los componentes lineales principales no logran captar las complejas diferencias moleculares entre estos tres tipos. El resultado es biológicamente sensato, ya que muestra que algunos tipos de cáncer son muy distantes, pero indica que las distinciones entre los subtipos superpuestos probablemente no sean lineales o requieran componentes adicionales para una diferenciación eficaz.
+
+## **GRÁFICO 4: MDS(multidimensional)**
+
+**Descripción de este tipo de gráfico:** Es una técnica de reducción de dimensionalidad que analiza y visualiza la similitud o distancia entre muestras. Transforma datos de un espacio multidimensional complejo a uno de menor dimensión (generalmente 2D o 3D), con el objetivo de que la distancia gráfica entre los puntos represente fielmente la disimilitud original entre los objetos. Existen dos variantes principales: MDS métrico (conserva distancias reales) y MDS no métrico (conserva el orden de las distancias).
+
+**Motivo de elección:** Se selecciona esta técnica cuando se desea visualizar la estructura global de los datos basándose en una definición específica de distancia (como Euclídea, Manhattan, Hamming o Log Fold Change) sin tener que cumplir requisitos estadísticos estrictos. Es ideal para entender "qué tan lejos" están unas muestras de otras en términos relativos.
+
+**Aspectos positivos y negativos:**
+
+-   **Ventajas:**
+
+    -   Flexibilidad estadística: No requiere suposiciones previas sobre los datos, como la normalidad estadística o la independencia de las muestras.
+
+    -   Interpretabilidad (Métrico): En su versión clásica, es altamente interpretable porque conserva las distancias absolutas reales entre observaciones.
+
+    -   Adaptabilidad (No métrico): La variante no métrica es útil para datos de naturaleza ordinal, donde importa más el ranking de similitud que la magnitud exacta.
+
+-   **Limitaciones:**
+
+    -   Coste computacional: Es un algoritmo exigente en recursos y tiempo de cálculo, especialmente en la implementación no métrica o con grandes conjuntos de datos.
+
+    -   Sensibilidad a parámetros: El resultado final puede variar drásticamente dependiendo de la elección arbitraria de los parámetros iniciales y la métrica de distancia seleccionada.
+
+```{r MDS, message=FALSE, warning=FALSE}
+
+datos <- as.matrix(read.csv("datos_500.csv", row.names = 1))
+distancia <- dist(datos)
+
+mds_result <- cmdscale(distancia, k = 10, eig = TRUE)
+
+valores_propios <- mds_result$eig
+varianza_explicada <- valores_propios / sum(valores_propios)
+varianza_acumulada <- cumsum(varianza_explicada)
+
+library(ggplot2)
+
+df_varianza <- data.frame(
+  Dimensión = 1:10,
+  Varianza_Explicada = varianza_explicada[1:10],
+  Varianza_Acumulada = varianza_acumulada[1:10]
+)
+
+# install.library("plotly")
+library(plotly)
+
+distancia <- dist(datos)
+mds_result <- cmdscale(distancia, k = 3)
+mds_df <- as.data.frame(mds_result)
+colnames(mds_df) <- c("Dim1", "Dim2", "Dim3")
+
+labels <- read.csv("labels.csv")  
+mds_df$Cancer_Type <- labels$Class
+
+fig <- plot_ly(mds_df, x = ~Dim1, y = ~Dim2, z = ~Dim3, 
+               color = ~Cancer_Type, colors = "Set1", 
+               marker = list(size = 4))
+fig
+
+
+```
+
+### Explicación del gráfico 4 (MDS)
+
+La imagen muestra un gráfico de escalamiento multidimensional (MDS) en 3D que visualiza muestras de datos genómicos categorizados por cinco tipos de cáncer: BRCA, COAD, KIRC, LUAD y PRAD. Cada grupo de color distinto corresponde a una patología específica, lo que demuestra una clara separación espacial en el espacio multidimensional.Desde el punto de vista biológico, esto indica que las firmas moleculares (probablemente perfiles de expresión génica) que impulsan cada tipo de cáncer son únicas. El hecho de que las muestras se agrupen estrechamente por tipo, con grupos como KIRC (verde) y PRAD (naranja) completamente aislados, sugiere que las causas biológicas subyacentes y las estructuras genómicas son lo suficientemente distintas como para diferenciar estas enfermedades basándose únicamente en su distancia matemática.
+
+## **GRÁFICO 5: Clustering (PCA)**
+
+**Descripción de este tipo de gráfico:** Se trata de un procedimiento de visualización que emplea el Análisis de Componentes Principales (PCA) para mostrar datos multivariantes en un plano bidimensional (2D). Las variables sintéticas, que capturan la mayor parte de la varianza de los datos originales, son los componentes 1 y 2 del gráfico. Los grupos obtenidos (con algoritmos como K-Means o PAM) se sobreponen a esta proyección, empleando elipses de concentración y colores para demarcar las zonas de cada grupo.
+
+**Motivo de elección:** Cuando se trabaja con más de dos variables, se escoge esta visualización para comprobar la calidad de la segmentación. Facilita la inspección visual del nivel de separación o superposición entre los grupos creados, además de identificar observaciones anómalas (outliers) que se distancian de los centroides de sus clústeres. Esto simplifica la complejidad multidimensional para el ojo humano.
+
+**Aspectos positivos y negativos:**
+
+-   **Ventajas:**
+
+    -   Reducción de complejidad: Condensa la información de múltiples variables en un solo gráfico legible, reteniendo las direcciones de mayor variación en los datos.
+
+    -   Diagnóstico visual rápido: Facilita la identificación inmediata de clústers bien separados frente a aquellos que se confunden (solapan), lo que ayuda a validar la elección del número de clústers ($k$).
+
+    -   Detección de patrones: Las cargas (loadings) de los componentes permiten intuir qué variables originales tienen más peso en la diferenciación de los grupos.
+
+-   **Limitaciones:**
+
+    -   Pérdida de información: Al reducirse a solo dos dimensiones, se pierde una parte de la variabilidad total (como vimos en tu caso, donde solo se explicaba el \~21%). Si este porcentaje es bajo, el gráfico puede no representar fielmente la realidad de los datos.
+
+    <!-- -->
+
+    -   Suposición de linealidad: PCA busca combinaciones lineales; si la separación entre los clústers depende de relaciones no lineales complejas, la proyección 2D puede distorsionar las distancias reales.
+
+    -   Forma de las elipses: Las elipses de los gráficos (como en `clusplot`) asumen generalmente que los datos dentro del clúster siguen una distribución normal multivariante. Si los clústers tienen formas irregulares (alargadas o curvas), las elipses pueden ser engañosas.
+
+```{r ClusteringNoJerarquico, message=FALSE, warning=FALSE}
+
+library(ggplot2)
+library(cluster)
+
+data <- data[, -1]
+constant_cols <- sapply(data, function(x) var(x) == 0)
+data_clean <- data[, !constant_cols]
+pam_result <- pam(data_clean, k = 2)
+
+clusplot(pam_result, main = "Clustering con PAM", color = TRUE, shade = TRUE)
+
+```
+
+### Explicación del gráfico 5 (Clustering)
+
+Esta imagen ilustra una solución de agrupamiento PAM con 2 clústeres ($k=2$), proyectada sobre los dos primeros componentes principales. La visualización muestra una separación mucho más clara en comparación con el modelo anterior de 5 clústeres. Hay dos grupos principales: un clúster rojo a la izquierda y un clúster azul a la derecha. Aunque hay cierto solapamiento en el centro (donde se cruzan las elipses), la distinción entre los grupos es mucho más coherente. Sin embargo, la variabilidad explicada sigue siendo baja, con un 21,01 %. Esto implica que, aunque $k=2$ parece visualmente superior en esta vista 2D, los datos son muy complejos y casi el 80 % de la información no está representada en este gráfico específico. A pesar de eso, se han realizado diferentes pruebas con otros valores de k y se ha deducido que crear 2 grupos es la forma más clara para poder interpretar los resultados pese a que se pierda información. La solución podría ser realizar esta misma prueba pero para otra muestra más pequeña.
+
+![](images/clipboard-4194007870.png)
+
+Pese a que sabiendo que hay 5 tipos de cancer diferentes en la base de datos utilizada, la realidad es que al pedirle al algoritmo que realize el clustering creando 5 grupos el resultado que se obtiene es confuso. La imagen muestra como muchos de los grupos se solapan y a raíz de eso la elección ha sido usar k=2 para que los grupos creados sean 2. Aun asi en ambos gráficos se aprecia como el grupo de la izquierda se mantiene a pesar de crear 5 grupos en vez de 2, por lo que seguramente implique que son los mas diferenciados respecto a los demás.

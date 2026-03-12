@@ -1,0 +1,650 @@
+---
+title: "Actividad 3 Grupal: Análisis Genómico"
+author: "Grupo 8"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+---
+
+# 1. Preparación de Datos
+
+Los datos proporcionados han sido separados en tres archivos diferentes:
+
+-   `gene_expression.csv`: los datos de expresión génica, sin indicar las etiquetas de las variables ni las clases.
+-   `classes.csv`: indica las clases correspondientes a cada fila del archivo anterior.
+-   `column_names.txt`: contiene los nombres de las columnas, es decir, los genes analizados.
+
+Para realizar el análisis, los datos deben unificarse en un único conjunto. Por ello, lo primero es integrar y depurar la información.
+
+Se utiliza la __imputación por mediana__ para tratar los valores ausentes (NAs). También realizamos una __transformación logarítmica__ para mitigar el efecto de los valores extremos.
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+# Carga de librerías
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(uwot)
+library(factoextra)
+library(pheatmap)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+library(ggplot2)
+library(pROC)
+library(RColorBrewer)
+options(rgl.useNULL = TRUE) 
+Sys.setenv(RGL_USE_NULL = "TRUE")
+library(rgl)
+library(RDRToolbox)
+
+# Para reproducibilidad
+set.seed(1234)
+
+# CARGA DE DATOS
+genes_name <- read.table("column_names.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+gene_expr <- read.csv("gene_expression.csv", sep = ";", header = FALSE)
+sample_info <- read.csv("classes.csv", sep = ";", header = FALSE)
+colnames(sample_info) <- c("SampleID", "Class")
+
+# LIMPIEZA DE NOMBRES 
+genes_name_clean <- make.names(genes_name, unique = TRUE)
+colnames(gene_expr) <- genes_name_clean
+rownames(gene_expr) <- sample_info$SampleID
+
+# IMPUTACIÓN DE VALORES AUSENTES (NAs)
+if(sum(is.na(gene_expr)) > 0) {
+  preProc <- preProcess(gene_expr, method = "medianImpute")
+  gene_expr <- predict(preProc, gene_expr)
+}
+
+# TRANSFORMACIÓN LOGARÍTMICA
+# Sumamos 1 para evitar log(0)
+gene_expr <- log2(gene_expr + 1)
+
+# CREACIÓN DEL DATASET FINAL
+full_data <- gene_expr
+full_data$Class <- as.factor(make.names(sample_info$Class))
+
+cat("Dimensiones finales del dataset:", dim(full_data), "\n")
+cat("Transformación Log2 aplicada correctamente.\n")
+```
+
+# 2. Métodos no supervisados
+
+## 2.1. Reducción de la dimensionalidad
+
+### PCA (Análisis de Componentes Principales)
+
+Es una técnica estadística de aprendizaje automático no supervisado utilizada para reducir la dimensionalidad de conjuntos de datos complejos. Transforma variables correlacionadas en un conjunto más pequeño de nuevas variables no correlacionadas (componentes principales), conservando la mayor parte de la información o varianza original.
+
+```{r pca, message=FALSE, warning=FALSE}
+# Para reproducibilidad
+set.seed(1234)
+
+# Filtramos genes constantes (varianza 0) para evitar errores en el escalado
+gene_variances <- apply(gene_expr, 2, var)
+const_genes <- gene_variances == 0
+gene_expr_pca <- gene_expr[, !const_genes]
+
+cat("Genes eliminados por varianza cero:", sum(const_genes), "\n")
+
+# EJECUCIÓN DEL PCA
+pca_res <- prcomp(gene_expr_pca, scale. = TRUE)
+
+# PREPARACIÓN PARA GGPLOT
+# A) Creamos un dataframe con los resultados
+pca_df <- as.data.frame(pca_res$x)
+
+# B) Añadimos la columna de grupos
+pca_df$grupo <- full_data$Class 
+
+# C) Calculamos la varianza explicada para los ejes
+varianza_explicada <- round(summary(pca_res)$importance[2, 1:2] * 100, 2)
+pc1_lab <- paste0("PC1 (", varianza_explicada[1], "%)")
+pc2_lab <- paste0("PC2 (", varianza_explicada[2], "%)")
+
+# VISUALIZACIÓN
+ggplot(pca_df, aes(x = PC1, y = PC2, color = grupo)) +
+  geom_point(size = 3, alpha = 0.8) + 
+  labs(title = "Análisis de Componentes Principales (PCA)",
+       subtitle = "Agrupación por Subtipo Molecular",
+       x = pc1_lab, 
+       y = pc2_lab,
+       color = "Grupo") +
+  theme_minimal() + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5), 
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  ) +
+  scale_color_brewer(palette = "Set1")
+
+```
+
+__Interpretación del PCA:__ En el Análisis de Componentes Principales generado se observa que el PC1 (12,37%) y el PC2 (9,06%) explican conjuntamente el 21,43% de la varianza total. Considerando el ruido inherente a los datos genéticos, este resultado es aceptable.
+
+Se aprecia que el grupo AGH (rojo) se diferencia claramente del resto, lo que indica la presencia de un perfil de expresión génica distintivo. Por el contrario, los grupos CFB, CGC, CHC y HPB presentan cierto grado de solapamiento en el espacio de las componentes principales, lo que sugiere similitudes transcriptómicas entre estas condiciones. Cabe destacar la mayor dispersión observada en el grupo CFB (azul), lo que apunta a una elevada heterogeneidad interna en sus perfiles de expresión génica. En contraste, el grupo HPB (naranja) muestra una distribución más compacta, reflejando una mayor homogeneidad en sus patrones transcriptómicos.
+
+### Uniform Manifold Approximation and Projection (U-MAP)
+
+El Uniform Manifold Approximation and Projection (U-MAP) es un algoritmo de aprendizaje automático utilizado para la reducción de dimensionalidad. Su función principal es comprimir datos complejos y masivos en un espacio de dos o tres dimensiones, facilitando su visualización. Sirve para identificar patrones, agrupamientos (clusters) y estructuras ocultas, conservando mejor la topología global de los datos que otros métodos.
+
+```{r umap, warning=FALSE, message=FALSE}
+# Para reproducibilidad
+set.seed(1234)
+
+# Ejecución de UMAP
+umap_fit <- umap(gene_expr, n_neighbors = 15, n_components = 2, min_dist = 0.1, verbose = FALSE)
+umap_df <- data.frame(umap_fit)
+colnames(umap_df) <- c("UMAP1", "UMAP2")
+umap_df$Class <- full_data$Class
+
+ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = Class)) +
+  geom_point(size = 2, alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "UMAP: Proyección no lineal", color = "Clase")
+
+```
+
+__Interpretación del UMAP:__ Esta visualización de UMAP muestra una proyección bidimensional donde datos de alta dimensionalidad se han agrupado en cinco clústeres claramente definidos, correspondientes a las clases AGH, CFB, CGC, CHC y HPB. La separación entre grupos es nítida, lo que indica que las categorías poseen perfiles diferenciados y una alta cohesión interna.
+
+La disposición espacial revela que la clase AGH (rojo) se encuentra aislada en el extremo derecho, mientras que CHC (azul) y HPB (rosa) dominan la parte superior. En contraste, CFB (oliva) y CGC (verde) se sitúan en la zona inferior izquierda, mostrando una mayor proximidad relativa entre ellas. Esta estructura sugiere que el algoritmo ha capturado con éxito las relaciones topológicas, facilitando la identificación de patrones y la clasificación precisa de las muestras. Cabe mencionar que hay dos puntos pertenecientes a los grupos HPB y CFB que aparecen agrupados junto con los del grupo CGC.
+
+## 2.2. Clusterización
+
+### Clusterización jerárquica con PCA
+
+```{r jerarquico, message=FALSE, warning=FALSE}
+# Para reproducibilidad
+set.seed(1234)
+
+# Calculamos la varianza acumulada
+pr_var <- pca_res$sdev^2
+prop_varex <- pr_var / sum(pr_var)
+pca_var_cum <- cumsum(prop_varex)
+
+# Colores por clase
+n_clases <- length(levels(full_data$Class))
+paleta_colores <- RColorBrewer::brewer.pal(n = max(3, n_clases), name = "Set1")
+class_colors <- paleta_colores[as.numeric(full_data$Class)]
+
+# Selección de PCs
+num_pcs <- which(pca_var_cum >= 0.80)[1]
+cat("Número de componentes seleccionados (80% varianza):", num_pcs, "\n")
+pca_scores <- pca_res$x[, 1:num_pcs]
+
+# Clustering
+dist_matrix <- dist(pca_scores, method = "euclidean")
+hc_pca <- hclust(dist_matrix, method = "ward.D2")
+
+# Dendrograma
+dend_order <- hc_pca$order
+
+plot(hc_pca,
+     labels = FALSE,
+     main = "Clustering Jerárquico sobre PCA",
+     xlab = "Muestras",
+     sub = paste("Basado en los primeros", num_pcs, "PCs"),
+     hang = -1)
+
+for (i in seq_along(dend_order)) {
+  idx_muestra <- dend_order[i]
+  axis(side = 1, at = i, labels = FALSE, 
+       col = class_colors[idx_muestra], 
+       lwd = 2, las = 2, tck = -0.02)
+}
+
+legend("topright", legend = levels(full_data$Class), 
+       fill = paleta_colores, bty = "n", cex = 0.8)
+
+# Corte en k=5
+k <- length(levels(full_data$Class))
+clusters_pca <- cutree(hc_pca, k = k)
+
+rect.hclust(hc_pca, k = k, border = "red")
+
+# Comparación clústeres vs clases
+## Tabla de distribución de muestras por clusters
+print(table(clusters_pca)) 
+
+## Tabla de distribución de muestras por clusters por class
+Tabla_con_pca <- table(Cluster = clusters_pca, Class = full_data$Class)
+print(Tabla_con_pca)
+
+## Tabla de distribución de muestras por clusters por class en porcentaje
+Tabla_pca_pct <- prop.table(Tabla_con_pca, margin = 1) * 100
+print(round(Tabla_pca_pct, 2))
+```
+
+__Interpretación del Clusterización jerárquica:__ A partir de las componentes principales (PCs) que explican aproximadamente el 80 % de la varianza acumulada, se llevó a cabo un clustering jerárquico utilizando la distancia euclídea y el método de enlace Ward.D2. Este enfoque permite agrupar las muestras en función de las principales fuentes de variabilidad identificadas mediante el PCA, reduciendo la influencia del ruido presente en los datos originales.
+
+El dendrograma obtenido muestra una estructura de agrupamiento razonablemente clara, con una homogeneidad interna globalmente aceptable. En particular, los clústeres 4 y 5 separan de forma completa (100%) las muestras correspondientes a las clases AGH y HPB, respectivamente, lo que indica que estas condiciones presentan perfiles de expresión génica claramente diferenciados.
+
+Por el contrario, los clústeres 1 a 3, aunque están dominados por una clase principal, contienen también muestras pertenecientes a otras clases. Concretamente, el clúster 1 está compuesto mayoritariamente por muestras de la clase CHC (86,6%), pero incluye un 12,7% de muestras de la clase CFB y un 0,64% de muestras de CGC. El clúster 2 está dominado por muestras de la clase CGC (75,7%), aunque presenta una proporción relevante de muestras de la clase CFB (23,8%) y una pequeña representación de HPB (0,5%). Por último, el clúster 3 está formado casi en su totalidad por muestras de la clase CFB (99,2%), con una presencia residual de muestras de AGH y CGC (0,4% en ambos casos).
+
+Estos resultados indican que, aunque el uso de PCA previo al clustering mejora la coherencia de los agrupamientos, las diferencias transcriptómicas entre determinadas condiciones no son completamente discriminantes. Este comportamiento refleja la complejidad biológica del sistema analizado y pone de manifiesto las limitaciones inherentes a los métodos no supervisados para separar de forma perfecta clases biológicamente relacionadas.
+
+### K-Means
+
+El método K-Means consiste en la partición de una conjunto de $n$ muestras (en nuestro caso pacientes) en $K$ grupos o _clusters_, de manera que cada muestra pertenzca al grupo cuyo valor medio (centroide) esté más cercano. Fijamos $K=5$ según las clases teóricas conocidas.
+
+```{r kmeans, message=FALSE, warning=FALSE}
+# Para reproducibilidad
+set.seed(1234)
+
+# Filtrado de genes constantes y escalado
+gene_variances <- apply(gene_expr, 2, var)
+gene_expr_clean <- gene_expr[, gene_variances > 0]
+gene_expr_scaled <- scale(gene_expr_clean)
+
+# Ejecución K-Means
+km_res <- kmeans(gene_expr_scaled, centers = 5, nstart = 25)
+
+# Visualización (Proyección PCA)
+pca_k_vis <- prcomp(gene_expr_scaled, center = FALSE, scale. = FALSE)
+df_kmeans <- data.frame(pca_k_vis$x[, 1:2])
+colnames(df_kmeans) <- c("PC1", "PC2")
+df_kmeans$Cluster <- as.factor(km_res$cluster)
+
+ggplot(df_kmeans, aes(x = PC1, y = PC2, color = Cluster, fill = Cluster)) +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(geom = "polygon", alpha = 0.1, type = "norm", level = 0.95) +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  labs(title = "K-Means Clustering (K=5)",
+       subtitle = "Proyección sobre Componentes Principales",
+       x = "Dimensión 1 (PC1)",
+       y = "Dimensión 2 (PC2)",
+       color = "Cluster", fill = "Cluster") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+```
+
+__Interpretación del K-means:__ Al igual que en el PCA, K-Means logra aislar bien ciertos grupos (correspondientes probablemente a AGH), pero muestra dificultades para separar nítidamente los grupos centrales superpuestos.
+
+# 3. Métodos supervidados
+
+Dividimos los datos en entrenamiento (70%) y prueba (30%) y configuramos la validación cruzada.
+
+```{r partition, message=FALSE, warning=FALSE}
+# Para reproducibilidad
+set.seed(1234)
+
+trainIndex <- createDataPartition(full_data$Class, p = 0.7, list = FALSE)
+trainData <- full_data[trainIndex, ]
+testData  <- full_data[-trainIndex, ]
+
+# Control de entrenamiento
+ctrl <- trainControl(method = "cv", number = 5, classProbs = TRUE, savePredictions = "final")
+```
+
+## Random Forest
+
+Rondom forest (RF) es el método basado en bagging (Agregación Bootstrap) más utilizado. La idea principal del RF es la combinación de un gran número de arboles de decisión en un gran bosque mediante bagging. 
+
+El siguiente paso es el entrenamiento de nuestro modelo y el cálculo del número de predictores aleatorio óptimo. El cual representamos en una gráfica. 
+
+```{r rf, message=FALSE, warning=FALSE}
+# Para reproducibilidad
+set.seed(1234)
+
+# Modelo Random Forest
+rf_model <- train(Class ~ ., data = trainData, method = "rf",
+                  trControl = ctrl, preProcess = c("center", "scale"),
+                  tuneLength = 3)
+print(rf_model)
+
+```
+__Interpretación del Random Forest:__ La alta exactitud global (0.9911) y el elevado valor de Kappa (0,9882) indican que el modelo Random Forest es capaz de discriminar de forma muy eficaz entre las cinco clases analizadas. El valor de Kappa, al corregir por el acuerdo esperado por azar, confirma que el rendimiento del modelo no se debe a una clasificación trivial, sino a la captura de patrones reales en los datos de expresión génica.
+
+Este rendimiento es notablemente elevado lo que sugiere que Random Forest es capaz de modelar relaciones no lineales e interacciones complejas entre genes, sin requerir supuestos de independencia entre variables.
+
+## Support Vector Machines (SVM)
+
+Este método busca un hiperplano que separe las clases en el espacio de características de la manera más amplia posible. Las SVM son especialmente útiles para problemas de clasificación y regresión, y pueden manejar datos no lineales mediante el uso de diferentes funciones de kernel.
+
+```{r svm, message=FALSE, warning=FALSE}
+# Para reproducibilidad
+set.seed(1234)
+
+# Modelo SVM
+svm_model <- train(Class ~ ., data = trainData, method = "svmRadial",
+                   trControl = ctrl, preProcess = c("center", "scale"),
+                   tuneLength = 3)
+print(svm_model)
+
+```
+__Interpretación del Random Forest:__ El modelo SVM con kernel RBF mostró una capacidad moderada para discriminar entre las clases, con una exactitud global cercana al 85,26%. A pesar de su capacidad para modelar relaciones no lineales, su rendimiento fue inferior al de otros enfoques, lo que sugiere que, en este contexto, la estructura de los datos y la alta dimensionalidad pueden limitar su efectividad sin un ajuste más exhaustivo de los hiperparámetros.
+
+
+## Árbol de decisión (CART)
+
+Un árbol de decisiones es un modelo predictivo y gráfico que organiza acciones, eventos aleatorios y sus consecuencias para facilitar la toma de decisiones complejas. Utiliza una estructura jerárquica con nodos de decisión (cuadrados), de probabilidad (círculos) y terminales (resultados) para evaluar costos, beneficios y probabilidades, permitiendo elegir la mejor opción.
+
+```{r cart, message=FALSE, warning=FALSE}
+# Para reproducibilidad
+set.seed(1234)
+
+# Árbol de decisión
+tree_model <- train(Class ~ ., data = trainData, method = "rpart",
+                    trControl = ctrl, tuneLength = 5)
+rpart.plot(tree_model$finalModel, main = "Árbol de Decisión Final")
+
+```
+
+__Interpetación del arbol de decisión__: El árbol de decisión generado clasifica las muestras de cinco subtipos moleculares (AGH, CFB, CGC, CHC, HPB) basándose en niveles críticos de expresión génica. La raíz del árbol utiliza el gen *ATP5PD* y  valores superiores o iguales a 2.9 identifican directamente al grupo CHC.
+
+Otras ramas emplean genes como *PDE6D*, *CPSF2* y *ZNF567* para filtrar los subtipos restantes. Por ejemplo, el nodo de *ATP5PD* aísla eficazmente al grupo AGH. EL marcador *PDE6D* por su parte hace una diferenciación de el grupo CFB y CGC, aunque no es una diferenciación tan clara como la de *ATP5PD*. Asimismo, el marcador *ZNF567* separa de una manera clara el grupo HPB de el grupo CGC. Cada nodo terminal muestra la probabilidad de pertenencia y el porcentaje de la muestra total, permitiendo identificar biomarcadores clave para el diagnóstico clínico.
+
+# 4. Evaluación y comparativa
+
+En este apratado comparamos los rendimientos de los tres modelos en el conjunto de pruebas.
+
+```{r eval, message=FALSE, warning=FALSE}
+# Para reproducibilidad
+set.seed(1234)
+
+# Predicciones
+pred_rf <- predict(rf_model, testData)
+pred_svm <- predict(svm_model, testData)
+pred_tree <- predict(tree_model, testData)
+
+# Función para reporte detallado
+mostrar_metricas <- function(preds, real, nombre) {
+  cat("\n=== EVALUACIÓN: ", nombre, " ===\n")
+  cm <- confusionMatrix(preds, real, mode = "everything")
+  print(cm$table)
+  cat("\nAccuracy Global:", round(cm$overall['Accuracy'], 4), "\n")
+  # Mostramos F1 por clase transpuesto para legibilidad
+  print(t(cm$byClass[, c("Sensitivity", "Precision", "F1")]))
+}
+
+mostrar_metricas(pred_rf, testData$Class, "RANDOM FOREST")
+
+# Tabla Resumen
+comp_table <- data.frame(
+  Modelo = c("Random Forest", "SVM", "Árbol Decisión"),
+  Accuracy = c(
+    confusionMatrix(pred_rf, testData$Class)$overall['Accuracy'],
+    confusionMatrix(pred_svm, testData$Class)$overall['Accuracy'],
+    confusionMatrix(pred_tree, testData$Class)$overall['Accuracy']
+  )
+)
+
+print(comp_table)
+```
+
+__Interpretación de la Matriz de Confusión__: En la matriz de confusión generada observamos cómo de bien clasifica el modelo las muestras. Las filas hacen referencia a los grupos reales y las columnas a los predichos. Los resultados muestran que más del 90% de las muestras han sido correctamente clasificadas.
+
+La comparación entre los distintos enfoques supervisados pone de manifiesto la clara superioridad del modelo Random Forest frente a alternativas más simples o con menor capacidad de modelado no lineal. Mientras que Random Forest alcanza una exactitud de 0,9958, los modelos SVM y árbol de decisión presentan valores de exactitud considerablemente inferiores (0,8361 y 0,8403, respectivamente). Esta diferencia sugiere que Random Forest es especialmente eficaz para capturar relaciones complejas e interacciones entre genes, características habituales en datos de expresión génica de alta dimensionalidad.
+
+# 5. Preguntas de la actividad. 
+## 1.	Procesamiento de los datos:
+
+### - ¿Qué método habéis escogido para llevar a cabo la imputación de los datos? 
+  
+  Se realizó en método de __imputación por mediana__. Se usa este método ya que la mediana es una medida de tendencia central que no es tan sensible a valores atípicos como la media.
+  
+### - ¿Habéis llevado a cabo algún otro tipo de procesamiento?
+
+  A parte de lo anteriomente dicho hemos realizado una __tranformación logarítmica ($\log_2(x+1)$)__. Los datos de expresión génica tienen la particularidad de que seguir una distribución asimétrica, donde unos pocos genes tienen valores de expresión muy altos y la mayoría muy bajos. Esta transformación estabiliza esta varianza y reduce el sesgo. 
+  
+  También se __eliminaron los genes con varianza nula__, ya que no aportan información discriminativa y pueden generar problemas numéricos durante el escalado de los datos.
+
+## 2.	Métodos no supervisados:
+
+### - ¿Cuál es el motivo por el cual habéis seleccionado estas técnicas de reducción de dimensionalidad? 
+
+  Seleccionamos el PCA lineal porque es el método más común y nos sirve para entender la varianza global y detectar _outliers_. Además no es computacionalmente exigente. Por otro lado, elegimos el UMAP ya que es el método que mejores resultados nos ha dado debido a su capacidad para interpretar las estructuras biológicas complejas. Es computacionalmente más exigente que el PCA. 
+
+###- ¿Cuál es el motivo por el cual habéis seleccionado estas técnicas de clusterización?
+
+  Seleccionamos el primer método de Clustering Jerárquico ya que es un estandar en trasncriptómica que nos permite visualizar las relaciones entre genes. El método k-means fué seleccionado por por su eficiencia computacional y capacidad para generar particiones "duras" (hard clustering). Al conocer a priori que existen 5 clases teóricas, K-Means es ideal para validar si la estructura matemática de los datos coincide con dichas clases forzando $k=5$."
+
+### - En ambos casos, ¿qué aspectos positivos y negativos tienen cada una? 
+  
+  __- PCA:__ 
+    _Positivo:_ Rápido, interpretable (sabemos qué genes pesan en cada PC). 
+    _Negativo:_ Pierde información si las relaciones son no lineales, como es en nuestro caso.
+  
+  __- UMAP:__ 
+    _Positivo:_ Excelente visualización de clusters separados, debido a su comprensión de las relaciones no lineales. 
+    _Negativo:_ Las distancias y densidades no se conservan perfectamente (no se puede interpretar la distancia en el eje X igual que en PCA) y puede consumir muchos recursos computacionales.
+  
+ __- Clusterización Jerárquica:__ 
+    _Positivo:_ No requiere definir $k$ de antemano, determinista. 
+    _Negativo:_ Computacionalmente costoso, y muy sensible al ruido.
+  
+  __- K-Means:__ 
+    _Positivo:_ Muy rápido y sencillo. 
+    _Negativo:_ Requiere fijar $k$ previamente, y asume clusters esféricos.
+
+### - En el caso de la clusterización, ¿podéis afirmar con certeza que los clústeres generados son los mejores posibles?
+
+  Sin dudad __no podemos afirmar que las opciones que hemos escogido sean las mejores__. Para ello habría que comparar todos los métodos que conocemos cambiando los parámetros para ver cómo estos afectan a la interpretación. Y aún con todo esto puede que debiéramos usar más de un metodo a la vez para interpretar distintas caracteristicas de nuestra muestra. A pesar de esto consideramos que los resultados obtenidos son lo suficientemente buenos como para presentarlos ya que los clusters obtenidos coinciden en gran medida con las muetras reales. 
+
+## 3.	Métodos supervisados:
+
+### - ¿Cuál es el motivo por el cual habéis seleccionado ambas técnicas de aprendizaje supervisado? ¿Cuál ha dado mejores resultados a la hora de clasificar las muestras?
+
+  Seleccionamos _Random Forest_ por ser un método de ensamblaje robusto que maneja bien el problema de que haya más genes que muestras y ofrece interpretabilidad. _SVM_ se escogió por su capacidad para encontrar hiperplanos óptimos en espacios de alta dimensionalidad. Finalmente, el _Árbol de Decisión_ se usó como línea base por su alta interpretabilidad clínica.
+  Tras evaluar la matriz de confusión y las métricas en el conjunto de test, el algoritmo que ha dado mejores resultados ha sido __Random Forest__, obteniendo el mayor Accuracy y F1-Score promedio (0,99 y 0,99), lo que indica un equilibrio óptimo entre precisión y sensibilidad.
+
+### - ¿Habéis considerado oportuno implementar algún método de reducción de dimensionalidad para procesar los datos antes de implementarlos en dichas técnicas? ¿Por qué?
+
+  En esta acitividad hemos optado por __introducir los genes procesados directemente__, sin realizar una reduccción previa mediante PCA con excepción del método de clusterización jerárquica. Esto se debe a que algoritmos como el Random Fores realizan su propia selección de características internarnas, e ignora los genes irrelevantes. Por otro lado, creemos que haber aplicado esta reducción previa en el caso de SVM hubiera podido  ayudarnos a reducir el ruido y el coste computacional, como pasa con la clusterización jerárquica. 
+
+### - ¿Qué aspectos positivos y negativos tienen cada una de las técnicas que habéis escogido?
+
+  __- Random Forest:__ 
+    _- Positivo:_ Muy preciso, robusto al ruido, no requiere escalado estricto. 
+    _- Negativo:_ Difícil de interpretar completamente y lento de entrenar.
+
+  __- SVM:__ 
+    _- Positivo:_ Muy eficaz en alta dimensionalidad. 
+    _- Negativo:_ Muy sensible a la elección de hiperparámetros y al escalado de datos.
+
+  __- Árbol de Decisión:__ 
+    _- Positivo:_ Muy fácil de interpretar visualmente. 
+    _- Negativo:_ Tiende al sobreajuste y es inestable (pequeños cambios en los datos cambian el árbol).
+
+
+## 4.	De estas cuatro opciones, ¿qué tipo de arquitectura de deep learning sería la más adecuada para procesar datos de expresión génica?
+- __a) Red de perceptrones (multiperceptron layers)__. Los datos de expresión génica son datos tabulares/estructurados donde las características no tienen necesariamente una relación espacial (como los píxeles en una imagen, donde usaríamos CNNs) ni temporal (como en el audio, donde usaríamos RNNs). Por tanto, una red densa o MLP es la arquitectura estándar adecuada para aprender patrones no lineales complejos en este tipo de datos independientes.
+
+
+# Anexo
+
+Cada miembro del grupo realizó un análisis tanto de métodos de aprendizaje no supervisados como de  supervisados se decidó incluidos en anexo los métodos que no se han usado para la respuesta a las preguntas de la actividad pero que se habían realizado.
+
+## A. Métodos No Supervisados
+### A.1 t-SNE (visualización)
+
+Con el objetivo de explorar la estructura no lineal de los datos de expresión génica y complementar los resultados obtenidos mediante PCA, se aplicó la técnica t-SNE (t-distributed Stochastic Neighbor Embedding) como método de reducción de dimensionalidad orientado a la visualización.
+
+```{r tsne_plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=5}
+# Para reproducibilidad
+set.seed(1234)
+
+if (!requireNamespace("Rtsne", quietly = TRUE)) install.packages("Rtsne")
+library(Rtsne)
+library(dplyr)
+library(caret)
+library(ggplot2)
+
+X <- full_data %>% select(-Class)
+y <- full_data$Class
+
+nzv <- nearZeroVar(X, saveMetrics = TRUE)
+X_filtered <- X[, !nzv$zeroVar]
+
+X_scaled <- scale(as.matrix(X_filtered))
+stopifnot(!any(is.na(X_scaled)))
+
+n <- nrow(X_scaled)
+perp <- max(5, min(30, floor((n - 1) / 3)))
+
+tsne <- Rtsne::Rtsne(
+  X_scaled,
+  dims = 2,
+  perplexity = perp,
+  max_iter = 1000,
+  verbose = FALSE
+)
+
+tsne_df <- data.frame(
+  Dim1 = tsne$Y[, 1],
+  Dim2 = tsne$Y[, 2],
+  Class = y
+)
+
+ggplot(tsne_df, aes(Dim1, Dim2, color = Class)) +
+  geom_point(size = 2, alpha = 0.85) +
+  labs(
+    title = paste("t-SNE (perplexity =", perp, ")"),
+    x = "Dim 1",
+    y = "Dim 2",
+    color = "Clase"
+  ) +
+  theme_classic()
+```
+__Interpretación t-SNE:__ La proyección obtenida mediante t-SNE muestra una separación clara entre la mayoría de las clases, lo que indica que los perfiles de expresión génica contienen información discriminatoria lo suficiente cuando se representan en un espacio no lineal. A diferencia del PCA, t-SNE prioriza la preservación de las relaciones locales entre muestras, lo que permite visualizar de forma más evidente la estructura interna de los datos.
+
+En la figura se observa que las muestras de la clase HPB (magenta) y AGH (rojo) forman clústeres compactos y más o menoss separados del resto, lo que sugiere un perfil transcriptómico relativamente homogéneo y claramente diferenciable.
+
+Las clases CGC (verde) y CHC (azul) también forman clústeres distinguibles, aunque presentan una mayor proximidad relativa entre sí, lo que podría reflejar similitudes biológicas parciales en sus patrones de expresión génica. Por su parte, la clase CFB (oliva) muestra una mayor dispersión espacial y un solapamiento relativo con otras clases, lo que apunta a una mayor heterogeneidad interna. 
+
+### A.2. Isomap
+
+Se utiliza para datos que presentan relaciones no lineales, preservando la estructura geodésica de los datos.
+
+```{r isomap,  message=FALSE, warning=FALSE}
+# Para reproducibilidad
+set.seed(1234)
+
+# Extraemos solo los genes ya que el algoritmo Isomap trabaja solo con datos numéricos
+datos_num_mat <- as.matrix(full_data %>% select(-Class))
+
+# Realizamos el algoritmo mediante la función Isomap de la librería caret
+isomap.results = Isomap(datos_num_mat, dims=1:10, k=15, plotResiduals=TRUE)
+isomap.df <- data.frame(isomap.results$dim2) 
+isomap.df$Clase <- full_data$Class
+
+# Graficamos el resultado
+ggplot(isomap.df, aes(x = X1, y = X2, color = isomap.df$Clase)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00")) +
+  labs(title = "Clasificación de Tipos de Cáncer", 
+       x = 'Dimensión 1', 
+       y = 'Dimensión 2', 
+       color = "Tipo de Cáncer") +
+  theme_classic() +
+  theme(
+    panel.grid.major = element_line(color = "gray90"), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "gray98"), 
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+```
+
+__Interpretación del Isomap:__ En el gráfico obtenida observamos una clara separación del grupo rojo (AGH) lo que sugiere patrones moleculares muy diferentes al resto, lo que sugiere la presencia de patrones moleculares marcadamente distintos respecto al resto de condiciones analizadas. Este grupo forma un clúster compacto y bien definido en el espacio reducido, indicando una elevada homogeneidad interna. Por otra parte, las clases CFB, CGC, CHC y HPB muestran una estructura de agrupamiento diferenciada, aunque con cierto grado de proximidad y solapamiento parcial entre algunos grupos, lo que apunta a similitudes transcriptómicas entre estas condiciones.
+
+En conjunto, estos resultados indican que Isomap es capaz de capturar relaciones no lineales relevantes en los datos de expresión génica y de revelar una estructura global coherente con las clases biológicas. No obstante, el solapamiento observado entre algunas condiciones sugiere que, aunque existen diferencias transcriptómicas claras para ciertos grupos, otras clases comparten patrones moleculares similares que dificultan una separación completamente nítida.
+
+## B. Métodos Supervisados
+## B.1 k-Nearest Neighbors (k-NN)
+
+```{r knn_model, message=FALSE, warning=FALSE, fig.width=9, fig.height=5}
+library(caret)
+library(dplyr)
+
+# Para reproducibilidad
+set.seed(1234)
+
+trainData$Class <- as.factor(trainData$Class)
+testData$Class  <- as.factor(testData$Class)
+
+# Remove zero-variance genes using ONLY train, apply to test
+Xtrain <- trainData %>% select(-Class)
+nzv_train <- nearZeroVar(Xtrain)
+
+trainData_f <- trainData[, -nzv_train, drop = FALSE]
+testData_f  <- testData[,  -nzv_train, drop = FALSE]
+
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+  classProbs = TRUE,
+  savePredictions = "final"
+)
+
+grid_k <- expand.grid(k = c(1,3,5,7,9,11,15,21))
+
+knnModel <- train(
+  Class ~ .,
+  data = trainData_f,
+  method = "knn",
+  trControl = ctrl,
+  preProcess = c("center", "scale"),
+  tuneGrid = grid_k
+)
+
+knnModel
+plot(knnModel)
+
+pred_test <- predict(knnModel, newdata = testData_f)
+
+cm_knn <- confusionMatrix(pred_test, testData_f$Class)
+cm_knn
+
+```
+__Interpretación k-NN:__ El clasificador k-NN mostró un rendimiento global muy elevado, con una exactitud global de 0,9916 y valores altos de sensibilidad, especificidad y exactitud balanceada para todas las clases, lo que indica una clasificación precisa y consistente.
+
+Las clases AGH, CFB y CGC presentan sensibilidades cercanas o iguales a 1, reflejando una correcta identificación de la mayoría de sus muestras, junto con valores de especificidad y valor predictivo positivo elevados, lo que sugiere una baja tasa de falsos positivos. Por su parte, las clases CHC y HPB muestran un comportamiento prácticamente perfecto, con valores de sensibilidad, especificidad y exactitud balanceada próximos o iguales a 1.
+
+La elevada exactitud balanceada (>0,98) en todas las clases confirma que el buen rendimiento del modelo no se ve afectado por posibles desequilibrios en la prevalencia de las clases. En conjunto, estos resultados indican que k-NN es un método altamente eficaz para la clasificación de los datos de expresión génica analizados, especialmente cuando se aplica sobre datos adecuadamente preprocesados y reducidos en dimensionalidad.
+
+## B.2 Naive Bayes
+
+```{r Naive Bayes}
+
+# Para reproducibilidad
+set.seed(1234)
+
+# 1. Entrenamiento del modelo Naive Bayes
+nb_model <- naiveBayes(Class ~ ., data = trainData_f)
+
+# 2. Predicción sobre el conjunto test
+nb_pred <- predict(nb_model, newdata = testData_f)
+
+# 3. Evaluación del modelo
+## Matriz de confusión
+conf_mat <- table(
+  Predicted = nb_pred,
+  Actual = testData$Class
+)
+
+print(conf_mat)
+
+## Exactitud global
+accuracy <- sum(diag(conf_mat)) / sum(conf_mat)
+cat("Accuracy global:", round(accuracy, 4), "\n")
+
+## Exactitud por clase
+class_accuracy <- diag(prop.table(conf_mat, margin = 2))
+print(class_accuracy)
+
+```
+__Interpretación Naive Bayes:__ La matriz de confusión obtenida mediante el clasificador Naive Bayes indica que el modelo es capaz de clasificar correctamente una proporción muy elevada de las muestras, alcanzando una exactitud global de 0,9916, lo que pone de manifiesto un rendimiento global muy alto.
+
+No obstante, el rendimiento del modelo varía entre clases. Se observa una tasa de acierto perfecta en aquellas clases con perfiles de expresión génica más distintivos, como HPB y CGC, que alcanzan una exactitud por clase de 1,000. En contraste, las clases con características transcriptómicas más similares presentan ligeramente mayores tasas de confusión, como es el caso de CFB, AGH y CHC, con exactitudes por clase de 0,9778, 0,9767 y 0,9762, respectivamente.
+
+En conjunto, estos resultados indican que, aunque Naive Bayes es un modelo relativamente sencillo, su aplicación sobre datos de expresión génica adecuadamente preprocesados permite capturar información relevante y obtener un rendimiento elevado. No obstante, las pequeñas confusiones observadas entre determinadas clases reflejan las limitaciones inherentes al modelo, derivadas principalmente de su supuesto de independencia condicional entre variables y de la similitud biológica existente entre algunas condiciones.

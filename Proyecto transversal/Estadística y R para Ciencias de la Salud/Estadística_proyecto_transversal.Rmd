@@ -1,0 +1,628 @@
+---
+title: "Resolución Actividad 3 máster Bioinformática (2025)"
+author: "Grupo 8"
+date: "2026-01-21"
+output: 
+  html_document:
+    toc: true       # añadimos un indice
+    toc_float: true # el índice te sigue al hacer scroll
+    theme: united
+  word_document: # con esto podemos generar un documento de word que nos permita extraer las tablas y gráficos
+    toc: true
+---
+
+# Paso 1: Preparación y limpieza de datos
+
+En primer lugar tenemos que cargar las librerías que vamos a utilizar y los datos, 
+seleccionando por una parte únicamente los genes y eliminando aquellas columnas 
+que tienen NAs.
+
+```{r datos, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)  
+library(factoextra) 
+library(pheatmap)  
+library(gtsummary)  
+library(gt)
+library(gridExtra)
+library(broom)
+
+# Generamos una semilla para que los resultados sean reproducibles
+set.seed(1234) 
+
+# Lectura de los datos
+df_simpson <- read.csv("data_simpson.csv", stringsAsFactors = FALSE) 
+
+# Se usó list.len = 10 para limitar la información mostrada y no sobrecargar el informe
+str(df_simpson, list.len = 10) 
+
+col_gen <- df_simpson %>% select(ADCY3:UHMK1) %>% names()
+
+colSums(is.na(df_simpson[, col_gen])) # comprobar el numero de nas
+
+df_clean <- df_simpson %>% # eliminar posibles nas
+  drop_na(all_of(col_gen))
+
+# Verificar si alguno de los genes estudiados para expresión génica tienen una varianza cero
+
+## Calcular la varianza
+Var_genes <- sapply(df_clean %>% select(ADCY3:UHMK1), var)
+# Var_genes # (Opcional mostrarlo para no llenar el reporte)
+
+## Verificar si hay genes con varianzas cero
+any(Var_genes == 0)
+
+## Eliminar genes con varianza cero (si los hubiera)
+genes_filtrados <- df_clean %>%
+  select(ADCY3:UHMK1) %>%
+  select(names(Var_genes[Var_genes != 0]))
+```
+
+Se realizó una inspección preliminar del conjunto de datos para verificar su estructura utilizando la función str() con el argumento list.len = 10, con el fin de limitar la cantidad de información mostrada y evitar sobrecargar el informe de la actividad. Posteriormente, se evaluó la presencia de valores perdidos (NA) en las variables de expresión génica y se eliminaron los individuos con datos incompletos, confirmándose la ausencia de valores perdidos antes de proceder a los análisis multivariantes. Asimismo, se evaluó la varianza de las variables de expresión génica para descartar la presencia de genes con varianza nula. No se identificaron variables con varianza cero, por lo que todas las variables génicas fueron incluidas en los análisis posteriores. Aunque no se detectaron valores perdidos ni variables con varianza cero en ninguna de las fases del análisis, se decidió incluir el script completo de procesamiento de datos de acuerdo con lo indicado en el enunciado de la actividad
+
+# Paso 2: Normalización
+
+Hecho esto, lo siguiente es normalizar. Para ello primero hacemos un test de Shapiro-Wilk a cada columna y extraemos los p-values que necesitaremos para la actividad.
+
+La prueba de Shapiro-Wilk es un contraste estadístico para determinar si una muestra de datos proviene de una distribución normal, siendo ideal para muestras pequeñas (n\<50) y una de las pruebas de normalidad más potentes. Su hipótesis nula ($H_{0}$) es que los datos son normales; si el valor p es bajo (ej. \< 0.05), se rechaza $H_{0}$, indicando que no son normales, mientras que un valor p alto sugiere que la distribución es normal, crucial para decidir si usar pruebas paramétricas o no paramétricas.
+
+```{r normalizar, message=FALSE, warning=FALSE}
+# Aplicar Shapiro-Wilk a cada columna de genes
+shapiro_res <- lapply(df_clean[, col_gen], shapiro.test)
+
+# Extraer p-values numéricos (necesarios para la lógica)
+p_values_shapiro <- sapply(shapiro_res, function(x) x$p.value)
+
+# Crear un dataframe para ver resultados
+# CAMBIO IMPORTANTE: Formateamos el P_Value para que se vea como texto científico
+tabla_normalidad <- data.frame(
+  Gen = names(p_values_shapiro),
+  
+  # Usamos formatC para forzar notación científica (ej. 1.2e-05)
+  # 'format = "e"' activa la notación científica
+  # 'digits = 2' muestra 2 decimales después del punto
+  P_Value_Texto = formatC(p_values_shapiro, format = "e", digits = 2),
+  
+  Es_Normal = p_values_shapiro > 0.05
+)
+
+# Muestra cuántos genes cumplen o no el criterio de normalidad
+knitr::kable(
+  tabla_normalidad,
+  row.names = FALSE,
+  col.names = c("Gen", "Valor P", "¿Es Normal?"), # Nombres bonitos para la cabecera
+  align = "c", # Centrar las columnas
+  caption = "Resultados del test de normalidad Shapiro–Wilk por gen"
+)
+```
+
+## Interpretación de los resultados
+
+La **Tabla 1** detalla los resultados de la prueba de **Shapiro-Wilk** para la expresión relativa de los genes analizados. Esta prueba evalúa la hipótesis nula ($H_0$) de que los datos provienen de una distribución normal, requisito esencial para aplicar estadística paramétrica como el ANOVA o la prueba t de Student.
+
+Los resultados muestran que todas las variables presentan valores $p$ extremadamente bajos (rango $10^{-5}$ a $10^{-10}$), muy inferiores al nivel de significación $\alpha = 0,05$. Por lo tanto, **se rechaza la hipótesis nula** en todos los casos, concluyendo que ninguna variable sigue una distribución normal. Este comportamiento es común en datos de qPCR debido a la variabilidad biológica y técnica.
+
+# Paso 3: Análisis de componentes principales (PCA)
+
+El Análisis de Componentes Principales (PCA) es una técnica de aprendizaje no supervisado que reduce la dimensionalidad de un conjunto de datos complejo, transformando variables correlacionadas en un número menor de nuevas variables (componentes principales) no correlacionadas que capturan la mayor parte de la información original (varianza). Su objetivo es simplificar los datos para facilitar la visualización, reducir la redundancia y mejorar el rendimiento de otros algoritmos de machine learning, como clustering o clasificación, manteniendo la esencia de los datos.
+
+```{r PCA, message=FALSE, warning=FALSE}
+# Realizamos PCA
+pca_res <- prcomp(df_clean[, col_gen], scale. = TRUE, center = TRUE)
+
+summary(pca_res)
+
+# Extraemos los scores de las primeras 6 PC
+pca_scores <- as.data.frame(pca_res$x[, 1:6])
+
+# 3. Agregar los scores al dataframe original 
+df_pca <- cbind(df_clean, pca_scores)
+
+```
+
+Visualizamos en primer lugar la tabla de PCA componentes y $R^2$. Solo mostrando los 6 compontentes que hemos guardado en el dataframe.
+
+```{r PCA tabla1, message=FALSE, warning=FALSE}
+pve <- (pca_res$sdev^2) / sum(pca_res$sdev^2)
+
+tabla_pca_r2 <- tibble(
+Componente = paste0("PC", seq_along(pve)),
+R2 = round(pve, 3)
+) |>
+slice(1:6)
+
+tab_pca_r2_gt <- tabla_pca_r2 |>
+gt() |>
+tab_header(title = "Tabla PCA componentes y R²") |>
+cols_label(R2 = html("R²")) |>
+tab_source_note("R² = proporción de varianza explicada por cada componente principal.")
+
+tab_pca_r2_gt
+```
+
+Después visualizamos la tabla de PCA cargas como se propone en el enunciado. 
+
+```{r PCA tabla2, message=FALSE, warning=FALSE}
+# Extraer las cargas de las variables (genes)
+cargas_pca <- as.data.frame(pca_res$rotation)
+
+# Añadir el nombre del gen como una columna
+cargas_pca$Variable <- rownames(cargas_pca)
+
+# Eliminar los rownames para evitar duplicados en la tabla
+rownames(cargas_pca) <- NULL
+
+# Selecionar las columnas de interés
+cargas_pca <- cargas_pca %>%
+  select(Variable, PC1, PC2, PC3, PC4, PC5, PC6)
+
+# Mostrar la tabla completa de cargas (PC1–PC6)
+knitr::kable(
+  cargas_pca,
+  digits = 3,
+  caption = "Cargas de las variables génicas en las seis primeras componentes principales"
+)
+```
+
+## Interpretación de los resultados
+
+Se realizó un análisis de componentes principales (PCA) sobre las variables de expresión génica, previo centrado y escalado de los datos, con el objetivo de reducir la dimensionalidad del conjunto de datos y explorar patrones globales de variabilidad. El PCA mostró que la variabilidad de la expresión génica se distribuye entre múltiples componentes, siendo la primera componente (PC1) responsable del 12,48% de la varianza total. Las seis primeras componentes principales (PC1-PC6) explicaron conjuntamente aproximadamente el 43,9% de la varianza total ($R^2$ acumulado). Estos resultados reflejan la naturaleza multivariada y compleja de los datos de expresión génica. De acuerdo con el enunciado de la actividad, se extrajeron y almacenaron los scores correspondientes a las seis primeras componentes principales, los cuales se incorporaron al conjunto de datos para su utilización en los análisis posteriores, incluyendo visualización, agrupación de individuos y modelos predictivos.
+
+# Paso 4: Visualización y clustering 
+
+```{r visual, message=FALSE, warning=FALSE}
+
+# Gráfico de variables coloreadas por calidad de representación (cos2) 
+fviz_pca_var(pca_res,
+             col.var = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             select.var = list(cos2 = 20), #para poder visualizar mejor los resultados
+             repel = TRUE, # Evita solapamiento de texto
+             title = "Mapa de Variables (Genes) - Calidad de representación")
+
+# Clustering de variables (3 clusters)
+var_coords <- get_pca_var(pca_res)$coord # Obtenemos coordenadas
+km_vars <- kmeans(var_coords, centers = 3) # Calculamos k-means
+
+# Visualizamos el clustering de variables
+fviz_pca_var(pca_res, 
+             col.var = as.factor(km_vars$cluster), # Colorear por cluster
+             palette = "jco",
+             legend.title = "Cluster Genes",
+             select.var = list(cos2 = 20),
+             repel = TRUE,
+             title = "Clustering de Genes (k=3)")
+
+# Contribuciones de las variables a los componentes
+
+p1 <- fviz_contrib(pca_res, choice = "var", axes = 1, top = 20,
+                   fill = "skyblue", color = "black") +
+      ggtitle("Contribución a PC1 (Top 20)")
+p2 <- fviz_contrib(pca_res, choice = "var", axes = 2, top = 20,
+                   fill = "salmon", color = "black") +
+      ggtitle("Contribución a PC2 (Top 20)")
+grid.arrange(p1, p2, ncol = 2)
+
+# Gráfico de individuos coloreados por categoría de IMC
+df_pca <- df_pca %>%
+  mutate(IMC_cat = case_when(
+    imc_kg_m2 < 25 ~ "Normal",
+    imc_kg_m2 >= 25 & imc_kg_m2 < 30 ~ "Sobrepeso",
+    imc_kg_m2 >= 30 ~ "Obesidad",
+    TRUE ~ "Desconocido"
+  ))
+
+# Convertimos a factor para ordenar la leyenda correctamente
+df_pca$IMC_cat <- factor(df_pca$IMC_cat, levels = c("Normal", "Sobrepeso", "Obesidad"))
+
+# Graficamos los individuos
+fviz_pca_ind(pca_res,
+             geom.ind = "point", # Solo puntos para no saturar con texto
+             col.ind = df_pca$IMC_cat, # Colorear por IMC
+             palette = c("green", "orange", "red"), # Colores semáforo
+             addEllipses = TRUE, # Elipses de confianza
+             legend.title = "Categoría IMC",
+             title = "Individuos según IMC")
+
+# Clustering de individuos (3 clusters) basado en scores PCA
+# Agrupamos a los pacientes según sus perfiles de expresión génica.
+km_ind <- kmeans(pca_res$x[, 1:6], centers = 3, nstart = 25) # Usamos las primeras 6 componentes
+
+# Añadimos el cluster al dataframe (útil para análisis posteriores)
+df_pca$cluster_pca <- as.factor(km_ind$cluster)
+
+# Visualizamos
+fviz_pca_ind(pca_res,
+             geom.ind = c("point", "text"),
+             col.ind = df_pca$cluster_pca, 
+             palette = "jco",
+             addEllipses = TRUE,
+             legend.title = "Cluster Pacientes",
+             title = "Clustering de Pacientes (k=3)")
+```
+
+## Interpretación de los resultados
+
+### PCA visualización de variables (genes) y clustering de genes
+
+Este PCA (biplot) ilustra la relación entre los genes analizados y los dos primeros componentes principales, que juntos captan aproximadamente el 21,1% de la varianza total (PC1: 12,5%, PC2: 8,6%). Cada vector representa la contribución de un gen; la longitud y la intensidad del color, regidas por la métrica cos2 (coseno cuadrado), indican la calidad de la representación en este plano. Cuanto mayor es la clarisas del azul mejor es la calidad de respresentación del mismo.
+
+Genes como LEPR, ADCY3, POMC y NTRK2 exhiben los vectores más largos y los valores cos2 más altos, identificándolos como los principales impulsores de la estructura de datos observada. La distancia angular entre vectores revela correlaciones: los genes que apuntan en la misma dirección, como _ADCY3_ y _PCSK1_, están positivamente correlacionados, mientras que los de cuadrantes opuestos sugieren una relación inversa en sus perfiles de expresión.
+
+### Contribución de los genes a las compontentes principales
+
+En las gráficas mostradas se pudo observar qué genes contribuyen más dentro de cada componente principal. Más concretemente a las CP1 y CP2.
+
+### PCA visualización de individuos (muestras)
+
+Esta imagen muestra un gráfico de individuos del PCA, donde cada punto representa una muestra del estudio. La distribución se basa en los dos primeros componentes principales, que explican el 21.1% de la varianza total. La mayoría de los individuos se agrupan cerca del origen, aunque se observan algunos valores atípicos hacia la derecha del eje Dim1.
+
+### Cluster plot de pacientes
+
+Esta imagen muestra un gráfico de clusters (Cluster plot) que proyecta los resultados del agrupamiento K-means sobre los dos primeros componentes principales. Se identifican claramente tres grupos: el Cluster 1 (puntos azules) aparece aislado a la derecha, indicando un perfil de expresión muy distinto. Por el contrario, los Clusters 2 y 3 (triángulos amarillos y cuadrados grises) están solapados en el centro-izquierda, sugiriendo que, aunque el algoritmo detecta diferencias estadísticas, sus perfiles biológicos son bastante similares entre sí.
+
+
+# Paso 5: Heatmap
+Un mapa de calor es una técnica de visualización de datos que mide la magnitud de un fenómeno en colores en dos dimensiones. La variación del color puede ser por tono o intensidad, haciendo obvia la lectura del fenómeno sobre el espacio que se trata.
+```{r hitmap, message=FALSE, warning=FALSE}
+
+# Correlación Spearman entre Genes y las primeras 6 PCs
+cor_matrix <- cor(df_pca[, col_gen], df_pca[, c("PC1","PC2","PC3","PC4","PC5","PC6")], 
+                  method = "spearman")
+
+# Dibujar Heatmap
+pheatmap(cor_matrix, 
+         cluster_rows = TRUE, 
+         cluster_cols = FALSE, 
+         display_numbers = FALSE, 
+         main = "Correlación Spearman: Genes vs PCs")
+
+```
+
+
+Este mapa de calor (heatmap) muestra la correlación de Spearman entre los genes analizados y los seis primeros componentes principales (PCs). Los colores representan la fuerza de la relación: el rojo intenso indica una correlación positiva fuerte (cercana a 0.6), mientras que el azul señala una correlación negativa (cercana a -0.6).
+
+Se observa que el PC2 está fuertemente definido por genes como _CADM2_ y _NTRK2_, mientras que el PC6 muestra una relación positiva clara con _GIPR_. El dendrograma de la izquierda agrupa los genes con patrones de correlación similares, permitiendo identificar módulos funcionales. En conjunto, esta matriz ayuda a interpretar biológicamente qué procesos representa cada componente del PCA.
+
+```{r heatmap2, message=FALSE, warning=FALSE}
+# Heatmap de expresión génica (opcional)
+# Escalado de la expresión génica por gen
+genes_scaled <- as.matrix(scale(df_pca %>% select(ADCY3:UHMK1)))
+
+# Asignar los nombres de fila para asegurar correspondencia
+rownames(genes_scaled) <- rownames(df_pca)
+
+# Crear dataframe de anotación con el IMC de los individuos
+annotation_imc <- data.frame(IMC_cat = as.factor(df_pca$IMC_cat))
+
+## Asignar los nombres de fila para asegurar correspondencia
+rownames(annotation_imc) <- rownames(df_pca)
+
+## Definir colores para la anotación categórica
+annotation_colors <- list(
+  IMC_cat = c(
+    "Normal" = "blue",
+    "Sobrepeso" = "green",
+    "Obesidad" = "red"
+  )
+)
+
+# Heatmap de expresión génica con anotación de IMC
+pheatmap(
+  genes_scaled,
+  annotation_row = annotation_imc,
+  annotation_colors = annotation_colors,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "complete",
+  main = "Heatmap de expresión génica (datos escalados) con categoría de IMC"
+)
+```
+
+## Interpretación de los resultados
+
+Los heatmaps construidos a partir de las correlaciones de Spearman entre las variables génicas y las primeras seis componentes principales, así como el heatmap de los datos de expresión génica escalados con anotación de la categoría de IMC, no revelaron patrones claros de asociación. De manera exploratoria, algunos genes como _PCSK1_, _SH2B1_, _LEPR_, _ADCY3_, _ANO4_ y _POMC_ parecen mostrar una mayor expresión en individuos con obesidad; no obstante, esta tendencia no da lugar a agrupamientos consistentes ni a una separación clara de los individuos según la categoría de IMC. En general, no se observaron agrupamientos definidos de genes asociados a componentes principales específicas ni una segregación evidente de los individuos en función del IMC. En conjunto, estos resultados sugieren que la variabilidad de la expresión génica se distribuye de forma compleja y no presenta asociaciones dominantes detectables mediante este enfoque exploratorio.
+
+# Paso 6: Tabla descriptiva
+
+```{r tabla descriptiva, message=FALSE, warning=FALSE}
+
+# Función para crear terciles para PC1, PC2 y PC3
+make_terciles <- function(x){
+  q <- quantile(x, probs = c(1/3, 2/3), na.rm = TRUE)
+  cut(x, breaks = c(-Inf, q, Inf), labels = c("t1", "t2", "t3"))
+}
+
+
+# Función para calcular la mediana (P25, P75)
+fmt_med_iqr <- function(x) {
+  q <- quantile(x, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+  paste0(
+    round(q[2], 2), " (",
+    round(q[1], 2), ", ",
+    round(q[3], 2), ")"
+  )
+}
+
+# Crear terciles para PC1, PC2 y PC3 en el dataframe final
+df_pca <- df_pca %>%
+  mutate(
+    PC1_t = make_terciles(PC1),
+    PC2_t = make_terciles(PC2),
+    PC3_t = make_terciles(PC3)
+  )
+
+# Definir los genes que queremos incluir (todos)
+genes_df <- colnames(df_pca %>% select(ADCY3:UHMK1))
+
+# Tabla de descriptivos por terciles PC1
+desc_PC1 <- df_pca %>%
+  select(PC1_t, all_of(genes_df)) %>%
+  pivot_longer(-PC1_t, names_to = "Gen", values_to = "valor") %>%
+  group_by(Gen, PC1_t) %>%
+  summarise(
+    estad = fmt_med_iqr(valor),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = PC1_t, values_from = estad)
+
+pval_PC1 <- df_pca %>%
+  select(PC1_t, all_of(genes_df)) %>%
+  pivot_longer(-PC1_t, names_to = "Gen", values_to = "valor") %>%
+  group_by(Gen) %>%
+  summarise(
+    p_PC1 = round(kruskal.test(valor ~ PC1_t)$p.value, 3),
+    .groups = "drop"
+  )
+
+tabla_PC1 <- left_join(desc_PC1, pval_PC1, by = "Gen") %>%
+  rename(
+    T1_PC1 = t1,
+    T2_PC1 = t2,
+    T3_PC1 = t3,
+    `Valor p_PC1` = p_PC1
+  )
+
+# Tabla de descriptivos por terciles PC2
+desc_PC2 <- df_pca %>%
+  select(PC2_t, all_of(genes_df)) %>%
+  pivot_longer(-PC2_t, names_to = "Gen", values_to = "valor") %>%
+  group_by(Gen, PC2_t) %>%
+  summarise(
+    estad = fmt_med_iqr(valor),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = PC2_t, values_from = estad)
+
+pval_PC2 <- df_pca %>%
+  select(PC2_t, all_of(genes_df)) %>%
+  pivot_longer(-PC2_t, names_to = "Gen", values_to = "valor") %>%
+  group_by(Gen) %>%
+  summarise(
+    p_PC2 = round(kruskal.test(valor ~ PC2_t)$p.value, 3),
+    .groups = "drop"
+  )
+
+tabla_PC2 <- left_join(desc_PC2, pval_PC2, by = "Gen") %>%
+  rename(
+    T1_PC2 = t1,
+    T2_PC2 = t2,
+    T3_PC2 = t3,
+    `Valor p_PC2` = p_PC2
+  )
+
+# Tabla de descriptivos por terciles PC3
+desc_PC3 <- df_pca %>%
+  select(PC3_t, all_of(genes_df)) %>%
+  pivot_longer(-PC3_t, names_to = "Gen", values_to = "valor") %>%
+  group_by(Gen, PC3_t) %>%
+  summarise(
+    estad = fmt_med_iqr(valor),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = PC3_t, values_from = estad)
+
+pval_PC3 <- df_pca %>%
+  select(PC3_t, all_of(genes_df)) %>%
+  pivot_longer(-PC3_t, names_to = "Gen", values_to = "valor") %>%
+  group_by(Gen) %>%
+  summarise(
+    p_PC3 = round(kruskal.test(valor ~ PC3_t)$p.value, 3),
+    .groups = "drop"
+  )
+
+tabla_PC3 <- left_join(desc_PC3, pval_PC3, by = "Gen") %>%
+  rename(
+    T1_PC3 = t1,
+    T2_PC3 = t2,
+    T3_PC3 = t3,
+    `Valor p_PC3` = p_PC3
+  )
+
+# Unir todas las componentes en una sola tabla
+tabla_final <- tabla_PC1 %>%
+  left_join(tabla_PC2, by = "Gen") %>%
+  left_join(tabla_PC3, by = "Gen")
+
+tabla_final <- tabla_final %>%
+  mutate(
+    `Valor p_PC1` = as.numeric(`Valor p_PC1`),
+    `Valor p_PC2` = as.numeric(`Valor p_PC2`),
+    `Valor p_PC3` = as.numeric(`Valor p_PC3`)
+  )
+
+# Formatar la tabla igual que el modelo
+tabla_final %>%
+  gt(rowname_col = "Gen") %>%
+  tab_header(
+    title = "Tabla descriptiva por terciles de las componentes principales"
+  ) %>%
+  tab_spanner(
+    label = "Componente 1",
+    columns = c(T1_PC1, T2_PC1, T3_PC1, `Valor p_PC1`)
+  ) %>%
+  tab_spanner(
+    label = "Componente 2",
+    columns = c(T1_PC2, T2_PC2, T3_PC2, `Valor p_PC2`)
+  ) %>%
+  tab_spanner(
+    label = "Componente 3",
+    columns = c(T1_PC3, T2_PC3, T3_PC3, `Valor p_PC3`)
+  ) %>%
+  cols_label(
+    T1_PC1 = "T1", T2_PC1 = "T2", T3_PC1 = "T3", `Valor p_PC1` = "Valor p",
+    T1_PC2 = "T1", T2_PC2 = "T2", T3_PC2 = "T3", `Valor p_PC2` = "Valor p",
+    T1_PC3 = "T1", T2_PC3 = "T2", T3_PC3 = "T3", `Valor p_PC3` = "Valor p"
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = list(
+      cells_body(columns = `Valor p_PC1`, rows = `Valor p_PC1` < 0.05),
+      cells_body(columns = `Valor p_PC2`, rows = `Valor p_PC2` < 0.05),
+      cells_body(columns = `Valor p_PC3`, rows = `Valor p_PC3` < 0.05)
+    )
+  ) %>%
+  tab_source_note(
+    source_note = "Valores expresados como mediana (P25, P75). Test de Kruskal–Wallis. Los valores p < 0.05 se muestran en negrita."
+  )
+```
+
+## Interpretación de los resultados
+
+Se realizó la tabla de descriptivos de los valores de expresión génica originales estratificadas por terciles de las tres primeras componentes principales (PC1, PC2 y PC3). Dado que las variables no presentaban distribución normal, los resultados se expresaron como mediana y rango intercuartílico (P25–P75), y las comparaciones entre terciles se realizaron mediante el test no paramétrico de Kruskal–Wallis.
+
+Se observaron diferencias estadísticamente significativas en la expresión de varios genes a lo largo de los terciles de la __PC1__, concretamente para _ADCY3_, _ANKRD27_, _CADM1_, _DPP9_, _GIPR_, _GPR151_, _MC4R_, _POMC_, _TMEM18_ y _UHMK1_. En el caso de la __PC2__, los genes que mostraron diferencias significativas entre terciles fueron _ANKRD27_, _CADM2_, _FTO_, _GPR151_, _KIAA1109_, _KSR2_, _LEP_, _NRP1_, _NTRK2_, _PHIP_ y _UHMK1_. Por último, para la __PC3__ se identificaron diferencias significativas en los genes _CREBRF_, _FTO_, _KIAA0586_, _KSR2_, _PHIP_, _SH2B1_ y _TMEM18_.
+
+Desde un punto de vista funcional, varios de los genes que mostraron diferencias significativas a lo largo de los terciles de las componentes principales están previamente implicados en la regulación del balance energético, el control del apetito y la homeostasis metabólica. Entre ellos destacan _MC4R_, _POMC_, _ADCY3_, _LEP_, _LEPR_, _FTO_, _TMEM18_ y _SH2B1_, genes ampliamente asociados a la regulación central del peso corporal y al riesgo de obesidad. Asimismo, genes como _KSR2_, _PHIP_ y _GPR151_ han sido relacionados con la señalización metabólica y la modulación de vías energéticas. La presencia recurrente de estos genes en distintas componentes sugiere que las componentes principales capturan gradientes biológicos relevantes vinculados a mecanismos centrales y periféricos del metabolismo energético, reforzando la interpretación biológica de los patrones observados en el análisis multivariante.
+
+# Paso 7: Regresión
+
+
+```{r regresio, message=FALSE, warning=FALSE}
+
+# Preparación de datos
+df_model <- df_pca |>
+  # Asegúrate de que las columnas existen y coinciden con tus datos
+  filter(!is.na(imc_kg_m2), !is.na(edad_anios), !is.na(sexo)) |>
+  mutate(
+    # Variable dependiente: Obesidad (IMC >= 30)
+    obesidad_bin = if_else(imc_kg_m2 >= 30, 1, 0),
+    
+    # Aseguramos niveles de referencia t1
+    PC1_t = relevel(factor(PC1_t), ref = "t1"),
+    PC2_t = relevel(factor(PC2_t), ref = "t1"),
+    PC3_t = relevel(factor(PC3_t), ref = "t1"),
+    sexo  = factor(sexo)
+  )
+
+#  Ajuste del Modelo Logístico (Para la Tabla)
+m3 <- glm(obesidad_bin ~ PC1_t + PC2_t + PC3_t + edad_anios + sexo,
+          data = df_model, family = binomial())
+
+# Función para filas de Terciles (PC)
+make_tercile_row <- function(model, pc_term, label) {
+  td <- broom::tidy(model, exponentiate = TRUE, conf.int = TRUE)
+  
+  # Busca los términos específicos para t2 y t3
+  t2 <- td |> filter(term == paste0(pc_term, "t2"))
+  t3 <- td |> filter(term == paste0(pc_term, "t3"))
+  
+  tibble(
+    Variable = label,
+    T1_OR = "1 (Ref.)", T1_p = "---", 
+    
+    T2_OR = if (nrow(t2)==1) sprintf("%.2f (%.2f a %.2f)", t2$estimate, t2$conf.low, t2$conf.high) else "-",
+    T2_p  = if (nrow(t2)==1) formatC(t2$p.value, format = "f", digits = 3) else "-",
+    
+    T3_OR = if (nrow(t3)==1) sprintf("%.2f (%.2f a %.2f)", t3$estimate, t3$conf.low, t3$conf.high) else "-",
+    T3_p  = if (nrow(t3)==1) formatC(t3$p.value, format = "f", digits = 3) else "-"
+  )
+}
+
+# Función para Covariables (Edad, Sexo)
+make_cov_rows <- function(model) {
+  broom::tidy(model, exponentiate = TRUE, conf.int = TRUE) |>
+    # Quitamos componentes principales y el Intercepto
+    filter(!stringr::str_detect(term, "^PC[123]_t"), 
+           term != "(Intercept)") |> 
+    
+    # Renombramos las variables
+    mutate(
+      term_limpio = case_when(
+        term == "edad_anios" ~ "Edad (Años)",        
+        stringr::str_detect(term, "sexo") ~ "Sexo",  
+        TRUE ~ term                                  
+      ),
+      
+      OR_IC = sprintf("%.2f (%.2f a %.2f)", estimate, conf.low, conf.high),
+      p_chr = formatC(p.value, format = "f", digits = 3)
+    ) |>
+    
+    # Construimos la fila final
+    transmute(
+      Variable = term_limpio,   
+      T1_OR = OR_IC, T1_p = p_chr,
+      T2_OR = "",    T2_p = "",
+      T3_OR = "",    T3_p = ""
+    )
+}
+
+# Construcción de la tabla
+tab_pc1_reg <- make_tercile_row(m3, "PC1_t", "Terciles componente 1")
+tab_pc2_reg <- make_tercile_row(m3, "PC2_t", "Terciles componente 2") 
+tab_pc3_reg <- make_tercile_row(m3, "PC3_t", "Terciles componente 3")
+ajustes     <- make_cov_rows(m3)
+
+tabla_regresion <- bind_rows(tab_pc1_reg, tab_pc2_reg, tab_pc3_reg, ajustes)
+
+# Renderizado con GT
+tab_reg_gt <- tabla_regresion |>
+  gt() |>
+  tab_header(title = "Tabla de regresión logística (Outcome: Obesidad IMC ≥ 30)") |>
+  tab_spanner(label = "T1 (Bajo)", columns = c(T1_OR, T1_p)) |>
+  tab_spanner(label = "T2 (Medio)", columns = c(T2_OR, T2_p)) |>
+  tab_spanner(label = "T3 (Alto)", columns = c(T3_OR, T3_p)) |>
+  cols_label(
+    Variable = "",
+    T1_OR = "OR (IC 95%)", T1_p = "P valor",
+    T2_OR = "OR (IC 95%)", T2_p = "P valor",
+    T3_OR = "OR (IC 95%)", T3_p = "P valor"
+  ) |>
+  tab_source_note("Modelo multivariante ajustado por edad y sexo.") |>
+  cols_align(align = "center", columns = -Variable)
+
+tab_reg_gt
+```
+
+```{r calculos_texto, include=FALSE}
+
+#Esta parte de aquí es simplemente para poder referenciar variables en el ultimo texto que puedan cambiar y que no den problemas cuando se corrija
+
+tabla_or <- broom::tidy(m3, exponentiate = TRUE)
+
+buscar_fila <- function(patron) {
+  tabla_or %>% 
+    filter(str_detect(term, patron)) %>% 
+    slice(1)
+}
+
+fila_edad <- buscar_fila("edad_anios")
+or_edad   <- if(nrow(fila_edad) > 0) fila_edad$estimate else 1
+p_edad    <- if(nrow(fila_edad) > 0) fila_edad$p.value else 1
+
+fila_pc1_t3 <- buscar_fila("PC1.*3") 
+or_pc1_t3   <- if(nrow(fila_pc1_t3) > 0) fila_pc1_t3$estimate else 1
+p_pc1_t3    <- if(nrow(fila_pc1_t3) > 0) fila_pc1_t3$p.value else 1
+
+txt_or_edad <- sprintf("%.2f", or_edad)
+txt_p_edad  <- sprintf("%.3f", p_edad)
+
+txt_or_pc1  <- sprintf("%.2f", or_pc1_t3)
+txt_p_pc1   <- sprintf("%.3f", p_pc1_t3)
+```
+
+## Interpretación de los resultados
+
+El análisis de regresión **logística** revela que la edad es un predictor significativo del riesgo de obesidad ($OR = `r txt_or_edad`, p = `r txt_p_edad`$), lo que indica que **la probabilidad de padecer obesidad aumenta** significativamente con cada año de edad en esta población. En cuanto a los componentes genéticos, los individuos del tercil superior de PC1 mostraron un riesgo **`r if(as.numeric(txt_or_pc1) > 1) "mayor" else "menor"`** ($OR = `r txt_or_pc1`$) en comparación con el grupo de referencia, aunque esta asociación no alcanzó la significación estadística ($p = `r txt_p_pc1`$). Estos resultados sugieren que, en este modelo ajustado, la edad cronológica tiene un peso preponderante sobre los perfiles de expresión génica analizados a la hora de determinar el estatus de obesidad.

@@ -27,6 +27,10 @@ El núcleo de este repositorio es un proyecto transversal diseñado por los prof
 - Desarrollo de pipelines para el procesamiento de datos crudos (FASTQ/BAM/VCF).
 - Análisis de variantes y anotación funcional utilizando herramientas de última generación.
 
+### 5. Bases de Datos y Recursos Bioinformáticos
+- Utilización de el lenguaje sql en la plataforma MySQL workbench
+- Creación de bases de datos y búsqueda de consultas mediante comandos
+
 ## Otros Proyectos y Scripts
 Además del proyecto central, este repositorio contiene:
 
